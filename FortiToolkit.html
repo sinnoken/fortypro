@@ -1,0 +1,2710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FortiToolkit — offline config auditor</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
+    color: #24272e; background: #f4f5f7; }
+  #drop { height: 100%; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; color: #7b828f; cursor: pointer;
+    border: 2px dashed transparent; transition: background .12s, border-color .12s; }
+  #drop.hot { background: #eef3fb; border-color: #9db8e6; }
+  #drop .big { font-size: 22px; color: #4a5160; }
+  #drop .sub { font-size: 13px; }
+  #workspace { display: none; height: 100%; flex-direction: column; }
+  header { height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+    background: #fafafc; border-bottom: 1px solid #e3e5ea; flex: 0 0 auto; }
+  header .name { color: #5a5f6a; font-size: 13px; margin-right: auto; }
+  header button, header label { font-size: 13px; }
+  header button { padding: 5px 12px; border: 1px solid #cfd3db; background: #fff;
+    border-radius: 5px; cursor: pointer; }
+  header button:hover { background: #f0f2f5; }
+  header label { display: inline-flex; align-items: center; gap: 5px; color: #4a5160;
+    user-select: none; }
+  main { flex: 1 1 auto; display: flex; min-height: 0; }
+  #side { width: 220px; flex: 0 0 auto; border-right: 1px solid #e3e5ea; background: #fff;
+    display: flex; flex-direction: column; }
+  #treeLbl { height: 30px; display: flex; align-items: center; padding: 0 12px;
+    background: #f0f0f4; color: #46484d; font-size: 12px; font-weight: 600; }
+  #tree { overflow: auto; flex: 1 1 auto; }
+  .devhdr { display: flex; align-items: center; gap: 6px; padding: 7px 10px; cursor: pointer;
+    font-size: 13px; font-weight: 600; color: #2c313a; background: #f7f8fa;
+    border-bottom: 1px solid #eceef1; user-select: none; }
+  .devhdr:hover { background: #eef1f5; }
+  .devhdr.sel { background: #e8f0fe; color: #1b4bab; }
+  .devhdr .caret { width: 12px; color: #7b828f; font-size: 11px; }
+  .devhdr .devname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .devhdr .devsub { color: #9aa0ab; font-weight: 400; font-size: 11px; margin-left: auto; }
+  .devkids { padding-bottom: 4px; }
+  .node { display: flex; align-items: center; padding: 6px 12px; font-size: 13px; cursor: pointer;
+    border-left: 3px solid transparent; }
+  .node:hover { background: #f4f6f9; }
+  .node.sel { background: #e8f0fe; border-left-color: #3b73d6; color: #1b4bab; font-weight: 600; }
+  .node .nlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .ncount { margin-left: auto; color: #9aa0ab; font-size: 11.5px; }
+  .node.sel .ncount { color: #5a83cf; }
+  #content { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+  #tabsbar { height: 38px; display: flex; align-items: stretch; background: #f6f7f9;
+    border-bottom: 1px solid #e3e5ea; flex: 0 0 auto; overflow-x: auto; }
+  .tab { padding: 0 16px; display: flex; align-items: center; font-size: 13px; cursor: pointer;
+    color: #5a6070; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tab:hover { background: #eef0f3; }
+  .tab.active { color: #1b4bab; border-bottom-color: #3b73d6; font-weight: 600; background: #fff; }
+  .panel { flex: 1 1 auto; overflow: auto; padding: 14px 16px; }
+  .hint { color: #6b7280; font-size: 12px; margin: 0 0 10px; }
+  .empty { color: #9aa0ab; font-size: 14px; padding: 30px; text-align: center; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid #eceef1;
+    vertical-align: top; }
+  th { background: #eee; position: sticky; top: -14px; font-weight: 600; color: #3c4046; }
+  tbody tr:nth-child(even) { background: #fafafc; }
+  tbody tr:hover { background: #f0f5ff; }
+  .pill { padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 600; }
+  .devpanel { background: #fff; border: 1px solid #e6e8ec; border-radius: 8px;
+    padding: 14px 18px; margin-bottom: 16px; }
+  .devpanel-h { font-size: 16px; font-weight: 700; color: #2c313a; margin-bottom: 10px; }
+  .devpanel-sub { font-size: 12.5px; font-weight: 400; color: #8a909b; }
+  .digrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 6px 24px; }
+  .di { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0;
+    border-bottom: 1px solid #f2f3f5; font-size: 12.5px; }
+  .di .dk { color: #6b7280; }
+  .di .dv { color: #24272e; font-weight: 600; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cards { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+  .cardbox { background: #fff; border: 1px solid #e6e8ec; border-radius: 8px;
+    padding: 16px 20px; min-width: 180px; }
+  .cardn { font-size: 30px; font-weight: 700; color: #2c313a; }
+  .cardt { font-size: 13px; color: #4a5160; margin-top: 2px; }
+  .cards2 { font-size: 11.5px; color: #8a909b; margin-top: 4px; }
+  footer { height: 26px; display: flex; align-items: center; padding: 0 12px; font-size: 12px;
+    color: #6b7280; background: #fafafc; border-top: 1px solid #e3e5ea; flex: 0 0 auto; }
+  #clibar { flex: 0 0 auto; border-top: 1px solid #e3e5ea; background: #fbfbfc;
+    display: flex; flex-direction: column; max-height: 42%; }
+  .clihead { height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: #f0f0f4; font-size: 12px; color: #46484d; }
+  .clihead span { margin-right: auto; font-weight: 600; }
+  .clihead button { padding: 3px 10px; font-size: 12px; border: 1px solid #cfd3db;
+    background: #fff; border-radius: 5px; cursor: pointer; }
+  .clihead button:hover { background: #e9ebef; }
+  #cliout { border: 0; resize: none; width: 100%; min-height: 150px; flex: 1 1 auto;
+    font-family: Consolas, "Courier New", monospace; font-size: 12.5px; padding: 10px 12px;
+    background: #fcfcfd; color: #24272e; white-space: pre; overflow: auto; }
+  .tick { cursor: pointer; }
+  .topotools { display: flex; align-items: center; gap: 6px; margin: 6px 0 8px; }
+  .topotools button { padding: 3px 10px; font-size: 12px; border: 1px solid #cfd3db;
+    background: #fff; border-radius: 5px; cursor: pointer; min-width: 30px; }
+  .topotools button:hover { background: #eef1f5; }
+  .topotools .tzoom { font-size: 12px; color: #5a6070; min-width: 42px; text-align: center; }
+  .topotools .thint { font-size: 11.5px; color: #9aa0ab; margin-left: auto; }
+  .topowrap { background: #fff; border: 1px solid #e6e8ec; border-radius: 8px;
+    height: 460px; overflow: auto; cursor: grab; }
+  .topowrap.grabbing { cursor: grabbing; }
+  svg.topo { display: block; }  /* native size; the wrapper scrolls/zooms it */
+  svg.topo .edge { cursor: pointer; }
+  svg.topo .edge:hover { stroke-width: 3.5; }
+  svg.topo .dnode { cursor: pointer; }
+  svg.topo .dnode:hover rect { fill: #eef3fb; }
+  svg.topo .tnode { font: 600 12px "Segoe UI", sans-serif; fill: #24272e; }
+  svg.topo .tnodesub { font: 10px "Segoe UI", sans-serif; fill: #8a909b; }
+  svg.topo .text-ext { font: 10px Consolas, monospace; fill: #6b7280; }
+  svg.topo .tseg { font: 600 11px Consolas, monospace; fill: #1b5e20; }
+  svg.topo .tsegsub { font: 9px "Segoe UI", sans-serif; fill: #7a8a7a; }
+  .topotools .modebtn { background: #eef3fb; border-color: #9db8e6; color: #1b4bab; font-weight: 600; }
+  .topotools .tsep { width: 1px; height: 20px; background: #dcdfe5; margin: 0 4px; }
+  .topolegend { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 10px; font-size: 12px;
+    color: #5a6070; }
+  .topolegend span { display: inline-flex; align-items: center; gap: 6px; }
+  .topolegend i { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+  .topolegend i.dashed { background: repeating-linear-gradient(90deg,#888 0 5px,transparent 5px 9px); }
+  .topolegend i.ext { height: 12px; width: 12px; border-radius: 50%; background: #f4f5f7;
+    border: 1px dashed #b0b4bc; }
+  .topobasis { margin-top: 10px; padding: 8px 12px; background: #f7f8fa; border-radius: 6px;
+    font-size: 12.5px; color: #46484d; font-family: Consolas, monospace; }
+  th.sorth { cursor: pointer; user-select: none; }
+  th.sorth:hover { background: #e4e6ea; }
+  th.sorth .arr { color: #3b73d6; font-size: 10px; }
+  .typebar { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    border: 1px solid #d8dbe1; border-radius: 14px; font-size: 12px; cursor: pointer;
+    background: #fff; user-select: none; }
+  .chip:hover { background: #f4f6f9; }
+  .chip[data-on="1"] { background: #e8f0fe; border-color: #9db8e6; color: #1b4bab; }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+  .chip b { font-weight: 700; color: #2c313a; }
+  .chip[data-on="1"] b { color: #1b4bab; }
+  .tree2 { font-family: Consolas, monospace; font-size: 12.5px; }
+  .tn { padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .tn:hover { background: #eef3fb; }
+  .mono { font-family: Consolas, monospace; color: #1b4bab; }
+  .dim { color: #8a909b; }
+  table.mx { border-collapse: collapse; font-size: 12px; }
+  table.mx th, table.mx td { border: 1px solid #e3e5ea; padding: 4px 8px; }
+  table.mx thead th { background: #eee; }
+  table.mx tbody th { background: #f4f5f8; text-align: right; white-space: nowrap; }
+  #modal { position: fixed; inset: 0; background: rgba(20,24,32,.42);
+    display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .mdbox { background: #fff; width: min(760px, 92vw); max-height: 80vh; border-radius: 10px;
+    display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.28); }
+  .mdhead { display: flex; align-items: center; padding: 10px 14px; border-bottom: 1px solid #eceef1; }
+  .mdhead span { font-weight: 600; margin-right: auto; font-size: 13px; }
+  .mdhead button { border: 0; background: none; font-size: 22px; line-height: 1; cursor: pointer;
+    color: #8a909b; }
+  .mdhead button:hover { color: #333; }
+  .mdbody { overflow: auto; padding: 10px 14px; font-family: Consolas, monospace; font-size: 12.5px; }
+  .mdbody > div { white-space: pre; padding: 1px 0; }
+  .mdbody .ln { display: inline-block; width: 46px; color: #b0b4bc; text-align: right;
+    margin-right: 12px; user-select: none; }
+  .ctxhit { background: #fff6d6; }
+  .ctxhit .ln { color: #b8860b; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div id="drop">
+    <div class="big">Drop one or more FortiGate config files here</div>
+    <div class="sub">or click to browse — .conf / .txt / .cfg — multiple files load side by side, everything stays in your browser</div>
+    <input id="picker" type="file" accept=".conf,.txt,.cfg,text/plain" multiple style="display:none">
+  </div>
+
+  <div id="workspace">
+    <header>
+      <span class="name">FortiToolkit</span>
+      <label><input type="checkbox" id="chkPass"> Show passing</label>
+      <label><input type="checkbox" id="chkCross" style="display:none"> Compare across VDOMs</label>
+      <button id="btnCsv">Export CSV</button>
+      <button id="btnOpen">+ Add config</button>
+    </header>
+    <main>
+      <div id="side">
+        <div id="treeLbl">VDOMs</div>
+        <div id="tree"></div>
+      </div>
+      <div id="content">
+        <div id="tabsbar">
+          <div class="tab" id="tab_ov">Overview</div>
+          <div class="tab" id="tab_comp"><span id="tabComp">Compliance</span></div>
+          <div class="tab" id="tab_safe"><span id="tabSafe">Safe to remove</span></div>
+          <div class="tab" id="tab_dup"><span id="tabDup">Duplicates</span></div>
+          <div class="tab" id="tab_routes"><span id="tabRoutes">Routing</span></div>
+          <div class="tab" id="tab_iface"><span id="tabIface">Interfaces</span></div>
+          <div class="tab" id="tab_vpn"><span id="tabVpn">VPN</span></div>
+          <div class="tab" id="tab_matrix"><span id="tabMatrix">Traffic design</span></div>
+          <div class="tab" id="tab_svc"><span id="tabSvc">Services</span></div>
+          <div class="tab" id="tab_topo"><span id="tabTopo">Topology</span></div>
+        </div>
+        <div class="panel" id="ov"></div>
+        <div class="panel" id="comp" style="display:none"></div>
+        <div class="panel" id="safe" style="display:none"></div>
+        <div class="panel" id="dup" style="display:none"></div>
+        <div class="panel" id="routes" style="display:none"></div>
+        <div class="panel" id="iface" style="display:none"></div>
+        <div class="panel" id="vpn" style="display:none"></div>
+        <div class="panel" id="matrix" style="display:none"></div>
+        <div class="panel" id="svc" style="display:none"></div>
+        <div class="panel" id="topo" style="display:none"></div>
+        <div id="clibar" style="display:none">
+          <div class="clihead">
+            <span id="clilbl">CLI for the ticked rows</span>
+            <button id="btnTickAll">Tick all</button>
+            <button id="btnClear">Clear</button>
+            <button id="btnCopy">Copy</button>
+          </div>
+          <textarea id="cliout" readonly spellcheck="false"># Tick rows above to build CLI.</textarea>
+        </div>
+      </div>
+    </main>
+    <footer><span id="status">Ready.</span></footer>
+  </div>
+
+  <div id="modal" style="display:none">
+    <div class="mdbox">
+      <div class="mdhead">
+        <span id="mdTitle">Config</span>
+        <button id="mdClose">×</button>
+      </div>
+      <div class="mdbody" id="mdBody"></div>
+    </div>
+  </div>
+
+<script>
+(()=>{var et=(e,t,r)=>()=>{if(r)throw r[0];try{return e&&(t=e(e=0)),t}catch(n){throw r=[n],n}};var tt=(e,t)=>()=>{try{return t||e((t={exports:{}}).exports,t),t.exports}catch(r){throw t=0,r}};function de(e,t){e[t]?e[t]++:e[t]=1}function le(e,t){e[t]!==void 0&&!--e[t]&&delete e[t]}function D(e,t,r,n){let i=""+t,o=""+r;if(!e&&i>o){let s=i;i=o,o=s}return i+""+o+""+(n===void 0?"\0":n)}function st(e,t,r,n){let i=""+t,o=""+r;if(!e&&i>o){let d=i;i=o,o=d}let s={v:i,w:o};return n&&(s.name=n),s}function J(e,t){return D(e,t.v,t.w,t.name)}function lt(e){let t={options:{directed:e.isDirected(),multigraph:e.isMultigraph(),compound:e.isCompound()},nodes:at(e),edges:ut(e)},r=e.graph();return r!==void 0&&(t.value=structuredClone(r)),t}function at(e){return e.nodes().map(t=>{let r=e.node(t),n=e.parent(t),i={v:t};return r!==void 0&&(i.value=r),n!==void 0&&(i.parent=n),i})}function ut(e){return e.edges().map(t=>{let r=e.edge(t),n={v:t.v,w:t.w};return t.name!==void 0&&(n.name=t.name),r!==void 0&&(n.value=r),n})}function ht(e){let t=new L(e.options);return e.value!==void 0&&t.setGraph(e.value),e.nodes.forEach(r=>{t.setNode(r.v,r.value),r.parent&&t.setParent(r.v,r.parent)}),e.edges.forEach(r=>{t.setEdge({v:r.v,w:r.w,name:r.name},r.value)}),t}function Ce(e,t,r,n){return ft(e,String(t),r||ct,n||function(i){return e.outEdges(i)})}function ft(e,t,r,n){let i={},o,s=0,d=e.nodes(),a=function(h){let c=r(h);i[h.v].distance+c<i[h.w].distance&&(i[h.w]={distance:i[h.v].distance+c,predecessor:h.v},o=!0)},l=function(){d.forEach(function(h){n(h).forEach(function(c){let p=c.v===h?c.v:c.w,b=p===c.v?c.w:c.v;a({v:p,w:b})})})};d.forEach(function(h){let c=h===t?0:Number.POSITIVE_INFINITY;i[h]={distance:c,predecessor:""}});let u=d.length;for(let h=1;h<u&&(o=!1,s++,l(),!!o);h++);if(s===u-1&&(o=!1,l(),o))throw new Error("The graph contains a negative weight cycle");return i}function gt(e){let t={},r=[],n;function i(o){o in t||(t[o]=!0,n.push(o),e.successors(o).forEach(i),e.predecessors(o).forEach(i))}return e.nodes().forEach(function(o){n=[],i(o),n.length&&r.push(n)}),r}function G(e,t,r,n){let i=function(o){return e.outEdges(o)};return vt(e,String(t),r||pt,n||i)}function vt(e,t,r,n){let i={},o=new Le,s,d,a=function(l){let u=l.v!==s?l.v:l.w,h=i[u],c=r(l),p=d.distance+c;if(c<0)throw new Error("dijkstra does not allow negative edge weights. Bad edge: "+l+" Weight: "+c);p<h.distance&&(h.distance=p,h.predecessor=s,o.decrease(u,p))};for(e.nodes().forEach(function(l){let u=l===t?0:Number.POSITIVE_INFINITY;i[l]={distance:u,predecessor:""},o.add(l,u)});o.size()>0&&(s=o.removeMin(),d=i[s],d.distance!==Number.POSITIVE_INFINITY);)n(s).forEach(a);return i}function bt(e,t,r){return e.nodes().reduce(function(n,i){return n[i]=G(e,i,t,r),n},{})}function Me(e){let t=0,r=[],n={},i=[];function o(s){let d=n[s]={onStack:!0,lowlink:t,index:t++};if(r.push(s),e.successors(s).forEach(function(a){a in n?n[a].onStack&&(d.lowlink=Math.min(d.lowlink,n[a].index)):(o(a),d.lowlink=Math.min(d.lowlink,n[a].lowlink))}),d.lowlink===d.index){let a=[],l;do l=r.pop(),n[l].onStack=!1,a.push(l);while(s!==l);i.push(a)}}return e.nodes().forEach(function(s){s in n||o(s)}),i}function mt(e){return Me(e).filter(function(t){return t.length>1||t.length===1&&e.hasEdge(t[0],t[0])})}function Et(e,t,r){return yt(e,t||wt,r||function(n){return e.outEdges(n)})}function yt(e,t,r){let n={},i=e.nodes();return i.forEach(function(o){n[o]={},n[o][o]={distance:0,predecessor:""},i.forEach(function(s){o!==s&&(n[o][s]={distance:Number.POSITIVE_INFINITY,predecessor:""})}),r(o).forEach(function(s){let d=s.v===o?s.w:s.v,a=t(s);n[o][d]={distance:a,predecessor:o}})}),i.forEach(function(o){let s=n[o];i.forEach(function(d){let a=n[d];i.forEach(function(l){let u=a[o],h=s[l],c=a[l],p=u.distance+h.distance;p<c.distance&&(c.distance=p,c.predecessor=h.predecessor)})})}),n}function Te(e){let t={},r={},n=[];function i(o){if(o in r)throw new B;o in t||(r[o]=!0,t[o]=!0,e.predecessors(o).forEach(i),delete r[o],n.push(o))}if(e.sinks().forEach(i),Object.keys(t).length!==e.nodeCount())throw new B;return n}function _t(e){try{Te(e)}catch(t){if(t instanceof B)return!1;throw t}return!0}function kt(e,t,r,n,i){Array.isArray(t)||(t=[t]);let o=(d=>{var a;return(a=e.isDirected()?e.successors(d):e.neighbors(d))!=null?a:[]}),s={};return t.forEach(function(d){if(!e.hasNode(d))throw new Error("Graph does not have node: "+d);i=Se(e,d,r==="post",s,o,n,i)}),i}function Se(e,t,r,n,i,o,s){return t in n||(n[t]=!0,r||(s=o(s,t)),i(t).forEach(function(d){s=Se(e,d,r,n,i,o,s)}),r&&(s=o(s,t))),s}function Pe(e,t,r){return kt(e,t,r,function(n,i){return n.push(i),n},[])}function Ot(e,t){return Pe(e,t,"post")}function Nt(e,t){return Pe(e,t,"pre")}function xt(e,t){let r=new L,n={},i=new Le,o;function s(a){let l=a.v===o?a.w:a.v,u=i.priority(l);if(u!==void 0){let h=t(a);h<u&&(n[l]=o,i.decrease(l,h))}}if(e.nodeCount()===0)return r;e.nodes().forEach(function(a){i.add(a,Number.POSITIVE_INFINITY),r.setNode(a)}),i.decrease(e.nodes()[0],0);let d=!1;for(;i.size()>0;){if(o=i.removeMin(),o in n)r.setEdge(o,n[o]);else{if(d)throw new Error("Input graph is not connected: "+e);d=!0}e.nodeEdges(o).forEach(s)}return r}function jt(e,t,r,n){return It(e,t,r,n??(i=>{let o=e.outEdges(i);return o??[]}))}function It(e,t,r,n){if(r===void 0)return G(e,t,r,n);let i=!1,o=e.nodes();for(let s=0;s<o.length;s++){let d=n(o[s]);for(let a=0;a<d.length;a++){let l=d[a],u=l.v===o[s]?l.v:l.w,h=u===l.v?l.w:l.v;r({v:u,w:h})<0&&(i=!0)}if(i)return Ce(e,t,r,n)}return G(e,t,r,n)}function R(e,t,r,n){let i=n;for(;e.hasNode(i);)i=ne(n);return r.dummy=t,e.setNode(i,r),i}function Ct(e){let t=new L().setGraph(e.graph());return e.nodes().forEach(r=>t.setNode(r,e.node(r))),e.edges().forEach(r=>{let n=t.edge(r.v,r.w)||{weight:0,minlen:1},i=e.edge(r);t.setEdge(r.v,r.w,{weight:n.weight+i.weight,minlen:Math.max(n.minlen,i.minlen)})}),t}function Fe(e){let t=new L({multigraph:e.isMultigraph()}).setGraph(e.graph());return e.nodes().forEach(r=>{e.children(r).length||t.setNode(r,e.node(r))}),e.edges().forEach(r=>{t.setEdge(r,e.edge(r))}),t}function ae(e,t){let r=e.x,n=e.y,i=t.x-r,o=t.y-n,s=e.width/2,d=e.height/2;if(!i&&!o)throw new Error("Not possible to find intersection inside of the rectangle");let a,l;return Math.abs(o)*s>Math.abs(i)*d?(o<0&&(d=-d),a=d*i/o,l=d):(i<0&&(s=-s),a=s,l=s*o/i),{x:r+a,y:n+l}}function A(e){let t=Y(De(e)+1).map(()=>[]);return e.nodes().forEach(r=>{let n=e.node(r),i=n.rank;i!==void 0&&(t[i]||(t[i]=[]),t[i][n.order]=r)}),t}function Lt(e){let t=e.nodes().map(n=>{let i=e.node(n).rank;return i===void 0?Number.MAX_VALUE:i}),r=T(Math.min,t);e.nodes().forEach(n=>{let i=e.node(n);Object.hasOwn(i,"rank")&&(i.rank-=r)})}function Mt(e){let t=e.nodes().map(s=>e.node(s).rank).filter(s=>s!==void 0),r=T(Math.min,t),n=[];e.nodes().forEach(s=>{let d=e.node(s).rank-r;n[d]||(n[d]=[]),n[d].push(s)});let i=0,o=e.graph().nodeRankFactor;Array.from(n).forEach((s,d)=>{s===void 0&&d%o!==0?--i:s!==void 0&&i&&s.forEach(a=>e.node(a).rank+=i)})}function ue(e,t,r,n){let i={width:0,height:0};return arguments.length>=4&&(i.rank=r,i.order=n),R(e,"border",i,t)}function Tt(e,t=Re){let r=[];for(let n=0;n<e.length;n+=t){let i=e.slice(n,n+t);r.push(i)}return r}function T(e,t){if(t.length>Re){let r=Tt(t);return e(...r.map(n=>e(...n)))}else return e(...t)}function De(e){let t=e.nodes().map(r=>{let n=e.node(r).rank;return n===void 0?Number.MIN_VALUE:n});return T(Math.max,t)}function St(e,t){let r={lhs:[],rhs:[]};return e.forEach(n=>{t(n)?r.lhs.push(n):r.rhs.push(n)}),r}function Pt(e,t){let r=Date.now();try{return t()}finally{console.log(e+" time: "+(Date.now()-r)+"ms")}}function Ye(e,t){return t()}function ne(e){let t=++Ft;return e+(""+t)}function Y(e,t,r=1){t==null&&(t=e,e=0);let n=o=>o<t;r<0&&(n=o=>t<o);let i=[];for(let o=e;n(o);o+=r)i.push(o);return i}function z(e,t){let r={};for(let n of t)e[n]!==void 0&&(r[n]=e[n]);return r}function $(e,t){let r;return typeof t=="string"?r=n=>n[t]:r=t,Object.entries(e).reduce((n,[i,o])=>(n[i]=r(o,i),n),{})}function Rt(e,t){return e.reduce((r,n,i)=>(r[n]=t[i],r),{})}function Ae(e,t,r){var n,i,o,s,d,a;if(!(e&&t&&r&&t.dummy==="edge"&&r.dummy==="edge"&&t.edgeObj&&r.edgeObj&&e[t.edgeObj.v]&&e[r.edgeObj.v]&&e[t.edgeObj.w]&&e[r.edgeObj.w]))return 0;let l=!0;t.edgeObj.w===r.edgeObj.w&&(l=!1);let u=l?(i=(n=e[t.edgeObj.v])==null?void 0:n.rank)!=null?i:NaN+1:(s=(o=e[t.edgeObj.w])==null?void 0:o.rank)!=null?s:NaN-1,h=Object.entries(e).find(y=>{var f,g;return((f=y[1].edgeObj)==null?void 0:f.v)===t.edgeObj.v&&((g=y[1].edgeObj)==null?void 0:g.w)===t.edgeObj.w&&y[1].rank===u}),c=Object.entries(e).find(y=>{var f,g;return((f=y[1].edgeObj)==null?void 0:f.v)===r.edgeObj.v&&((g=y[1].edgeObj)==null?void 0:g.w)===r.edgeObj.w&&y[1].rank===u});if(!h||!c)return 0;let p=(d=h[1].order)!=null?d:NaN,b=(a=c[1].order)!=null?a:NaN;return isNaN(p-b)?0:p-b}function he(e){e._prev._next=e._next,e._next._prev=e._prev,delete e._next,delete e._prev}function At(e,t){if(e!=="_next"&&e!=="_prev")return t}function Bt(e,t){if(e.nodeCount()<=1)return[];let r=$t(e,t||Gt);return zt(r.graph,r.buckets,r.zeroIdx).flatMap(n=>e.outEdges(n.v,n.w)||[])}function zt(e,t,r){var n;let i=[],o=t[t.length-1],s=t[0],d;for(;e.nodeCount();){for(;d=s.dequeue();)U(e,t,r,d);for(;d=o.dequeue();)U(e,t,r,d);if(e.nodeCount()){for(let a=t.length-2;a>0;--a)if(d=(n=t[a])==null?void 0:n.dequeue(),d){i=i.concat(U(e,t,r,d,!0)||[]);break}}}return i}function U(e,t,r,n,i){let o=[],s=i?o:void 0;return(e.inEdges(n.v)||[]).forEach(d=>{let a=e.edge(d),l=e.node(d.v);i&&o.push({v:d.v,w:d.w}),l.out-=a,te(t,r,l)}),(e.outEdges(n.v)||[]).forEach(d=>{let a=e.edge(d),l=d.w,u=e.node(l);u.in-=a,te(t,r,u)}),e.removeNode(n.v),s}function $t(e,t){let r=new L,n=0,i=0;e.nodes().forEach(d=>{r.setNode(d,{v:d,in:0,out:0})}),e.edges().forEach(d=>{let a=r.edge(d.v,d.w)||0,l=t(d),u=a+l;r.setEdge(d.v,d.w,u);let h=r.node(d.v),c=r.node(d.w);i=Math.max(i,h.out+=l),n=Math.max(n,c.in+=l)});let o=qt(i+n+3).map(()=>new Vt),s=n+1;return r.nodes().forEach(d=>{te(o,s,r.node(d))}),{graph:r,buckets:o,zeroIdx:s}}function te(e,t,r){var n,i,o;r.out?r.in?(o=e[r.out-r.in+t])==null||o.enqueue(r):(i=e[e.length-1])==null||i.enqueue(r):(n=e[0])==null||n.enqueue(r)}function qt(e){let t=[];for(let r=0;r<e;r++)t.push(r);return t}function Xt(e,t){(e.graph().acyclicer==="greedy"?Bt(e,r(e)):Jt(e,t??null)).forEach(n=>{let i=e.edge(n);e.removeEdge(n),i.forwardName=n.name,i.reversed=!0,e.setEdge(n.w,n.v,i,ne("rev"))});function r(n){return i=>n.edge(i).weight}}function Jt(e,t){let r=[],n={},i={};function o(a){Object.hasOwn(i,a)||(i[a]=!0,n[a]=!0,e.outEdges(a).forEach(l=>{Object.hasOwn(n,l.w)?r.push(l):o(l.w)}),delete n[a])}function s(a){var l;Object.hasOwn(i,a)||(i[a]=!0,n[a]=!0,(l=e.outEdges(a))==null||l.forEach(u=>{var h,c;Object.hasOwn(n,u.w)||((h=t.node(a))==null?void 0:h.rank)>((c=t.node(u.w))==null?void 0:c.rank)&&Kt(e,u.w,u)?r.push(u):s(u.w)}),delete n[a])}let d=o;return t&&typeof t.node=="function"&&(d=s),e.sources().forEach(d),e.nodes().forEach(d),r}function Ut(e){e.edges().forEach(t=>{let r=e.edge(t);if(r.reversed){e.removeEdge(t);let n=r.forwardName;delete r.reversed,delete r.forwardName,e.setEdge(t.w,t.v,r,n)}})}function Kt(e,t,r){let n=new Set;function i(o){var s;if(e.sources().includes(o))return!0;n.add(o);for(let d of(s=e.inEdges(o))!=null?s:[])if(!(d.v===r.v&&d.w===r.w)&&!n.has(d.v)&&i(d.v))return!0;return!1}return i(t)}function Wt(e){e.graph().dummyChains=[],e.edges().forEach(t=>Ht(e,t))}function Ht(e,t){let r=t.v,n=e.node(r).rank,i=t.w,o=e.node(i).rank,s=t.name,d=e.edge(t),a=d.labelRank;if(o===n+1)return;e.removeEdge(t);let l,u,h;for(h=0,++n;n<o;++h,++n)d.points=[],u={width:0,height:0,edgeLabel:d,edgeObj:t,rank:n},l=R(e,"edge",u,"_d"),n===a&&(u.width=d.width,u.height=d.height,u.dummy="edge-label",u.labelpos=d.labelpos),e.setEdge(r,l,{weight:d.weight},s),h===0&&e.graph().dummyChains.push(l),r=l;e.setEdge(r,i,{weight:d.weight},s)}function Qt(e){e.graph().dummyChains.forEach(t=>{let r=e.node(t),n=r.edgeLabel,i;for(e.setEdge(r.edgeObj,n);r.dummy;)i=e.successors(t)[0],e.removeNode(t),n.points.push({x:r.x,y:r.y}),r.dummy==="edge-label"&&(n.x=r.x,n.y=r.y,n.width=r.width,n.height=r.height),t=i,r=e.node(t)})}function ie(e){let t={};function r(n){let i=e.node(n);if(Object.hasOwn(t,n))return i.rank;t[n]=!0;let o=e.outEdges(n),s=o?o.map(a=>a==null?Number.POSITIVE_INFINITY:r(a.w)-e.edge(a).minlen):[],d=T(Math.min,s);return d===Number.POSITIVE_INFINITY&&(d=0),i.rank=d}e.sources().forEach(r)}function F(e,t){return e.node(t.w).rank-e.node(t.v).rank-e.edge(t).minlen}function Zt(e){let t=new L({directed:!1}),r=e.nodes();if(r.length===0)throw new Error("Graph must have at least one node");let n=r[0],i=e.nodeCount();t.setNode(n,{});let o,s;for(;er(t,e)<i&&(o=tr(t,e),!!o);)s=t.hasNode(o.v)?F(e,o):-F(e,o),rr(t,e,s);return t}function er(e,t){function r(n){let i=t.nodeEdges(n);i&&i.forEach(o=>{let s=o.v,d=n===s?o.w:s;!e.hasNode(d)&&!F(t,o)&&(e.setNode(d,{}),e.setEdge(n,d,{}),r(d))})}return e.nodes().forEach(r),e.nodeCount()}function tr(e,t){return t.edges().reduce((r,n)=>{let i=Number.POSITIVE_INFINITY;return e.hasNode(n.v)!==e.hasNode(n.w)&&(i=F(t,n)),i<r[0]?[i,n]:r},[Number.POSITIVE_INFINITY,null])[1]}function rr(e,t,r){e.nodes().forEach(n=>t.node(n).rank+=r)}function P(e){e=Ct(e),ie(e);let t=Ve(e);se(t),oe(t,e);let r,n;for(;r=ze(t);)n=$e(t,e,r),qe(t,e,r,n)}function oe(e,t){let r=ir(e,e.nodes());r=r.slice(0,r.length-1),r.forEach(n=>sr(e,t,n))}function sr(e,t,r){let n=e.node(r).parent,i=e.edge(r,n);i.cutvalue=Ge(e,t,r)}function Ge(e,t,r){let n=e.node(r).parent,i=!0,o=t.edge(r,n),s=0;o||(i=!1,o=t.edge(n,r)),s=o.weight;let d=t.nodeEdges(r);return d&&d.forEach(a=>{let l=a.v===r,u=l?a.w:a.v;if(u!==n){let h=l===i,c=t.edge(a).weight;if(s+=h?c:-c,lr(e,r,u)){let p=e.edge(r,u).cutvalue;s+=h?-p:p}}}),s}function se(e,t){arguments.length<2&&(t=e.nodes()[0]),Be(e,{},1,t)}function Be(e,t,r,n,i){let o=r,s=e.node(n);t[n]=!0;let d=e.neighbors(n);return d&&d.forEach(a=>{Object.hasOwn(t,a)||(r=Be(e,t,r,a,n))}),s.low=o,s.lim=r++,i?s.parent=i:delete s.parent,r}function ze(e){return e.edges().find(t=>e.edge(t).cutvalue<0)}function $e(e,t,r){let n=r.v,i=r.w;t.hasEdge(n,i)||(n=r.w,i=r.v);let o=e.node(n),s=e.node(i),d=o,a=!1;return o.lim>s.lim&&(d=s,a=!0),t.edges().filter(l=>a===ce(e,e.node(l.v),d)&&a!==ce(e,e.node(l.w),d)).reduce((l,u)=>F(t,u)<F(t,l)?u:l)}function qe(e,t,r,n){let i=r.v,o=r.w;e.removeEdge(i,o),e.setEdge(n.v,n.w,{}),se(e),oe(e,t),dr(e,t)}function dr(e,t){let r=e.nodes().find(i=>!e.node(i).parent);if(!r)return;let n=nr(e,[r]);n=n.slice(1),n.forEach(i=>{let o=e.node(i).parent,s=t.edge(i,o),d=!1;s||(s=t.edge(o,i),d=!0),t.node(i).rank=t.node(o).rank+(d?s.minlen:-s.minlen)})}function lr(e,t,r){return e.hasEdge(t,r)}function ce(e,t,r){return r.low<=t.lim&&t.lim<=r.lim}function ur(e){let t=e.graph().ranker;if(typeof t=="function")return t(e);switch(t){case"network-simplex":fe(e);break;case"tight-tree":cr(e);break;case"longest-path":hr(e);break;case"none":break;default:fe(e)}}function cr(e){ie(e),Ve(e)}function fe(e){or(e)}function gr(e){let t=vr(e),r=e.graph();Array.isArray(r.dummyChains)&&r.dummyChains.forEach(n=>{let i=e.node(n),o=i.edgeObj,s=pr(e,t,o.v,o.w),d=s.path,a=s.lca,l=0,u=d[l],h=!0;for(;n!==o.w;){if(i=e.node(n),h){for(;(u=d[l])!==a&&e.node(u).maxRank<i.rank;)l++;u===a&&(h=!1)}if(!h){for(;l<d.length-1&&e.node(d[l+1]).minRank<=i.rank;)l++;u=d[l]}u!==void 0&&e.setParent(n,u),n=e.successors(n)[0]}})}function pr(e,t,r,n){let i=[],o=[],s=Math.min(t[r].low,t[n].low),d=Math.max(t[r].lim,t[n].lim),a;a=r;do a=e.parent(a),i.push(a);while(a&&(t[a].low>s||d>t[a].lim));let l=a,u=n;for(;(u=e.parent(u))!==l;)o.push(u);return{path:i.concat(o.reverse()),lca:l}}function vr(e){let t={},r=0;function n(i){let o=r;e.children(i).forEach(n),t[i]={low:o,lim:r++}}return e.children(q).forEach(n),t}function br(e){let t=R(e,"root",{},"_root"),r=mr(e),n=Object.values(r),i=T(Math.max,n)-1,o=2*i+1;e.graph().nestingRoot=t,e.edges().forEach(d=>e.edge(d).minlen*=o);let s=wr(e)+1;e.children(q).forEach(d=>{Xe(e,t,o,s,i,r,d)}),e.graph().nodeRankFactor=o}function Xe(e,t,r,n,i,o,s){var d;let a=e.children(s);if(!a.length){s!==t&&e.setEdge(t,s,{weight:0,minlen:r});return}let l=ue(e,"_bt"),u=ue(e,"_bb"),h=e.node(s);e.setParent(l,s),h.borderTop=l,e.setParent(u,s),h.borderBottom=u,a.forEach(c=>{var p;Xe(e,t,r,n,i,o,c);let b=e.node(c),y=b.borderTop?b.borderTop:c,f=b.borderBottom?b.borderBottom:c,g=b.borderTop?n:2*n,v=y!==f?1:i-((p=o[s])!=null?p:0)+1;e.setEdge(l,y,{weight:g,minlen:v,nestingEdge:!0}),e.setEdge(f,u,{weight:g,minlen:v,nestingEdge:!0})}),e.parent(s)||e.setEdge(t,l,{weight:0,minlen:i+((d=o[s])!=null?d:0)})}function mr(e){let t={};function r(n,i){let o=e.children(n);o&&o.length&&o.forEach(s=>r(s,i+1)),t[n]=i}return e.children(q).forEach(n=>r(n,1)),t}function wr(e){return e.edges().reduce((t,r)=>t+e.edge(r).weight,0)}function Er(e){let t=e.graph();e.removeNode(t.nestingRoot),delete t.nestingRoot,e.edges().forEach(r=>{e.edge(r).nestingEdge&&e.removeEdge(r)})}function _r(e){function t(r){let n=e.children(r),i=e.node(r);if(n.length&&n.forEach(t),i&&Object.hasOwn(i,"minRank")){i.borderLeft=[],i.borderRight=[];for(let o=i.minRank,s=i.maxRank+1;o<s;++o)ge(e,"borderLeft","_bl",r,i,o),ge(e,"borderRight","_br",r,i,o)}}e.children(q).forEach(t)}function ge(e,t,r,n,i,o){let s={width:0,height:0,rank:o,borderType:t},d=i[t][o-1],a=R(e,"border",s,r);i[t][o]=a,e.setParent(a,n),d&&e.setEdge(d,a,{weight:1})}function kr(e){var t;let r=(t=e.graph().rankdir)==null?void 0:t.toLowerCase();(r==="lr"||r==="rl")&&Je(e)}function Or(e){var t;let r=(t=e.graph().rankdir)==null?void 0:t.toLowerCase();(r==="bt"||r==="rl")&&Nr(e),(r==="lr"||r==="rl")&&(xr(e),Je(e))}function Je(e){e.nodes().forEach(t=>pe(e.node(t))),e.edges().forEach(t=>pe(e.edge(t)))}function pe(e){let t=e.width;e.width=e.height,e.height=t}function Nr(e){e.nodes().forEach(t=>K(e.node(t))),e.edges().forEach(t=>{var r;let n=e.edge(t);(r=n.points)==null||r.forEach(K),Object.hasOwn(n,"y")&&K(n)})}function K(e){e.y=-e.y}function xr(e){e.nodes().forEach(t=>W(e.node(t))),e.edges().forEach(t=>{var r;let n=e.edge(t);(r=n.points)==null||r.forEach(W),Object.hasOwn(n,"x")&&W(n)})}function W(e){let t=e.x;e.x=e.y,e.y=t}function jr(e,t=null){let r={},n=e.nodes().filter(l=>!e.children(l).length),i=n.map(l=>e.node(l).rank),o=T(Math.max,i),s=Y(o+1).map(()=>[]);function d(l){if(r[l])return;r[l]=!0;let u=e.node(l);s[u.rank].push(l);let h=e.successors(l);h&&[...h].sort((c,p)=>a(c,p)).forEach(d)}n.sort((l,u)=>e.node(l).rank-e.node(u).rank).forEach(d);function a(l,u){let h=e.node(l),c=e.node(u);return Ae(t,h,c)}return s}function Ir(e,t){let r=0;for(let n=1;n<t.length;++n)r+=Cr(e,t[n-1],t[n]);return r}function Cr(e,t,r){let n=Rt(r,r.map((l,u)=>u)),i=t.flatMap(l=>{let u=e.outEdges(l);return u?u.map(h=>({pos:n[h.w],weight:e.edge(h).weight})).sort((h,c)=>h.pos-c.pos):[]}),o=1;for(;o<r.length;)o<<=1;let s=2*o-1;o-=1;let d=new Array(s).fill(0),a=0;return i.forEach(l=>{let u=l.pos+o;d[u]+=l.weight;let h=0;for(;u>0;)u%2&&(h+=d[u+1]),u=u-1>>1,d[u]+=l.weight;a+=l.weight*h}),a}function Lr(e,t=[]){return t.map(r=>{let n=e.inEdges(r);if(!n||!n.length)return{v:r};{let i=n.reduce((o,s)=>{let d=e.edge(s),a=e.node(s.v);return{sum:o.sum+d.weight*a.order,weight:o.weight+d.weight}},{sum:0,weight:0});return{v:r,barycenter:i.sum/i.weight,weight:i.weight}}})}function Mr(e,t){let r={};e.forEach((i,o)=>{let s={indegree:0,in:[],out:[],vs:[i.v],i:o};i.barycenter!==void 0&&(s.barycenter=i.barycenter,s.weight=i.weight),r[i.v]=s}),t.edges().forEach(i=>{let o=r[i.v],s=r[i.w];o!==void 0&&s!==void 0&&(s.indegree++,o.out.push(s))});let n=Object.values(r).filter(i=>!i.indegree);return Tr(n)}function Tr(e){let t=[];function r(i){return o=>{o.merged||(o.barycenter===void 0||i.barycenter===void 0||o.barycenter>=i.barycenter)&&Sr(i,o)}}function n(i){return o=>{o.in.push(i),--o.indegree===0&&e.push(o)}}for(;e.length;){let i=e.pop();t.push(i),i.in.reverse().forEach(r(i)),i.out.forEach(n(i))}return t.filter(i=>!i.merged).map(i=>z(i,["vs","i","barycenter","weight"]))}function Sr(e,t){let r=0,n=0;e.weight&&(r+=e.barycenter*e.weight,n+=e.weight),t.weight&&(r+=t.barycenter*t.weight,n+=t.weight),e.vs=t.vs.concat(e.vs),e.barycenter=r/n,e.weight=n,e.i=Math.min(t.i,e.i),t.merged=!0}function Pr(e,t,r,n,i){let o={},s=null,d=null,a=i;typeof t=="boolean"?(a=t,o={}):t&&(o=t,s=r??null,d=n??null);let l=St(e,g=>Object.hasOwn(g,"barycenter")),u=l.lhs,h=l.rhs.sort((g,v)=>v.i-g.i),c=[],p=0,b=0,y=0;u.sort(Fr(d,s,!!a));for(let[g,v]of Object.entries(o)){let m=u.findIndex(_=>_.vs[0]===g);u.splice(m+1,0,v)}y=ve(c,h,y),u.forEach(g=>{y+=g.vs.length,c.push(g.vs),p+=g.barycenter*g.weight,b+=g.weight,y=ve(c,h,y)});let f={vs:c.flat(1)};return b&&(f.barycenter=p/b,f.weight=b),f}function ve(e,t,r){let n;for(;t.length&&(n=t[t.length-1]).i<=r;)t.pop(),e.push(n.vs),r++;return r}function Fr(e,t,r){return(n,i)=>{if(n.barycenter<i.barycenter)return-1;if(n.barycenter>i.barycenter)return 1;if(e&&(typeof n.vs[0]=="string"||typeof i.vs[0]=="string")){let o=e.node(n.vs[0]),s=e.node(i.vs[0]),d=Ae(t,o,s);if(d!==0)return d}return r?i.i-n.i:n.i-i.i}}function Ue(e,t,r,n,i){var o,s,d,a,l,u,h,c,p,b,y;let f=null,g=i;typeof n=="boolean"?(g=n,f=null):n!==void 0&&(f=n);let v=e.children(t),m=e.node(t),_=m?m.borderLeft:void 0,O=m?m.borderRight:void 0,k={};_&&(v=v.filter(E=>E!==_&&E!==O));let x=Lr(e,v);x.forEach(E=>{if(e.children(E.v).length){let{result:w}=Ue(e,E.v,r,f,g);k[E.v]=w,Object.hasOwn(w,"barycenter")&&Dr(E,w)}});let N=Mr(x,r);Rr(N,k);let C={},M=!1;for(let E=0;E<N.length;E++)for(let w=E+1;w<N.length;w++)if(!(!N[E]||!N[w]||!((o=N[E])!=null&&o.barycenter)||!((s=N[w])!=null&&s.barycenter))&&((d=N[E])==null?void 0:d.barycenter)===N[w].barycenter){let I=(l=(a=N[E])==null?void 0:a.vs[0])!=null?l:"",S=(h=(u=N[w])==null?void 0:u.vs[0])!=null?h:"",V=e.node(I),X=e.node(S);if(V.dummy==="edge"&&X.dummy==="edge"&&((c=V.edgeObj)==null?void 0:c.v)===((p=X.edgeObj)==null?void 0:p.v)&&((b=V.edgeObj)==null?void 0:b.w)===((y=X.edgeObj)==null?void 0:y.w))if(V.edgeLabel.reversed){C[S]=N[E],N.splice(E,1),E--;break}else C[I]=N[w],N.splice(w,1),w--;else M=!0}let j=Pr(N,C,f,e,g);if(_&&O){j.vs=[_,j.vs,O].flat(1);let E=e.predecessors(_);if(E&&E.length){let w=e.node(E[0]),I=e.predecessors(O),S=e.node(I[0]);Object.hasOwn(j,"barycenter")||(j.barycenter=0,j.weight=0),j.barycenter=(j.barycenter*j.weight+w.order+S.order)/(j.weight+2),j.weight+=2}}return Object.defineProperty(j,"result",{value:j,enumerable:!1,configurable:!0,writable:!0}),Object.defineProperty(j,"usedBias",{value:M,enumerable:!1,configurable:!0,writable:!0}),j}function Rr(e,t){e.forEach(r=>{r.vs=r.vs.flatMap(n=>t[n]?t[n].vs:n)})}function Dr(e,t){e.barycenter!==void 0?(e.barycenter=(e.barycenter*e.weight+t.barycenter*t.weight)/(e.weight+t.weight),e.weight+=t.weight):(e.barycenter=t.barycenter,e.weight=t.weight)}function Yr(e,t,r,n){n||(n=e.nodes());let i=Ar(e),o=new L({compound:!0}).setGraph({root:i}).setDefaultNodeLabel(s=>e.node(s));return n.forEach(s=>{let d=e.node(s),a=e.parent(s);if(d.rank===t||d.minRank<=t&&t<=d.maxRank){o.setNode(s),o.setParent(s,a||i);let l=e[r](s);l&&l.forEach(u=>{let h=u.v===s?u.w:u.v,c=o.edge(h,s),p=c!==void 0?c.weight:0;o.setEdge(h,s,{weight:e.edge(u).weight+p})}),Object.hasOwn(d,"minRank")&&o.setNode(s,{borderLeft:d.borderLeft[t],borderRight:d.borderRight[t]})}}),o}function Ar(e){let t;for(;e.hasNode(t=ne("_root")););return t}function Vr(e,t,r){let n={},i;r.forEach(o=>{let s=e.parent(o),d,a;for(;s;){if(d=e.parent(s),d?(a=n[d],n[d]=s):(a=i,i=s),a&&a!==s){t.setEdge(a,s);return}s=d}})}function Ke(e,t={},r=null){if(typeof t.customOrder=="function"){t.customOrder(e,Ke);return}let n=De(e),i=be(e,Y(1,n+1),"inEdges"),o=be(e,Y(n-1,-1,-1),"outEdges"),s=jr(e,r);if(me(e,s),t.disableOptimalOrderHeuristic)return;let d=Number.POSITIVE_INFINITY,a,l=t.constraints||[];for(let u=0,h=0;h<4;++u,++h){Gr(u%2?i:o,u%4>=2,l,r),s=A(e);let c=Ir(e,s);c<d?(h=0,a=Object.assign({},s),d=c):c===d&&(a=structuredClone(s))}me(e,a)}function be(e,t,r){let n=new Map,i=(o,s)=>{n.has(o)||n.set(o,[]),n.get(o).push(s)};for(let o of e.nodes()){let s=e.node(o);if(typeof s.rank=="number"&&i(s.rank,o),typeof s.minRank=="number"&&typeof s.maxRank=="number")for(let d=s.minRank;d<=s.maxRank;d++)d!==s.rank&&i(d,o)}return t.map(function(o){return Yr(e,o,r,n.get(o)||[])})}function Gr(e,t,r,n){let i=!0,o=new L;e.forEach(function(s){r.forEach(u=>o.setEdge(u.left,u.right));let d=s.graph().root,{result:a,usedBias:l}=Ue(s,d,o,n,i);t&&l&&(i=!i),a.vs.forEach((u,h)=>s.node(u).order=h),Vr(s,o,a.vs)})}function me(e,t){Object.values(t).forEach(r=>r.forEach((n,i)=>e.node(n).order=i))}function Br(e,t){let r={};function n(i,o){let s=0,d=0,a=i.length,l=o[o.length-1];return o.forEach((u,h)=>{let c=$r(e,u),p=c?e.node(c).order:a;(c||u===l)&&(o.slice(d,h+1).forEach(b=>{let y=e.predecessors(b);y&&y.forEach(f=>{let g=e.node(f),v=g.order;(v<s||p<v)&&!(g.dummy&&e.node(b).dummy)&&We(r,f,b)})}),d=h+1,s=p)}),o}return t.length&&t.reduce(n),r}function zr(e,t){let r={};function n(o,s,d,a,l){Y(s,d).forEach(u=>{let h=o[u];if(h!==void 0&&e.node(h).dummy){let c=e.predecessors(h);c&&c.forEach(p=>{if(p===void 0)return;let b=e.node(p);b.dummy&&(b.order<a||b.order>l)&&We(r,p,h)})}})}function i(o,s){let d=-1,a=-1,l=0;return s.forEach((u,h)=>{if(e.node(u).dummy==="border"){let c=e.predecessors(u);if(c&&c.length){let p=c[0];if(p===void 0)return;a=e.node(p).order,n(s,l,h,d,a),l=h,d=a}}n(s,l,s.length,a,o.length)}),s}return t.length&&t.reduce(i),r}function $r(e,t){if(e.node(t).dummy){let r=e.predecessors(t);if(r)return r.find(n=>e.node(n).dummy)}}function We(e,t,r){if(t>r){let i=t;t=r,r=i}let n=e[t];n||(e[t]=n={}),n[r]=!0}function qr(e,t,r){if(t>r){let i=t;t=r,r=i}let n=e[t];return n!==void 0&&Object.hasOwn(n,r)}function Xr(e,t,r,n,i){let o={},s={},d={};return t.forEach(a=>{a.forEach((l,u)=>{o[l]=l,s[l]=l,d[l]=u})}),t.forEach(a=>{let l=-1,u=-1,h=!1,c=a,p=a.findIndex(b=>i?.includes(b)||we(b,e,i));p>0&&(c=[a[p],...a.slice(0,p),...a.slice(p+1)],h=!0),c.forEach(b=>{var y;let f=n(b);if(f&&f.length){i!=null&&i.includes(b)&&(f=f.filter(m=>we(m,e,i)));let g=f.sort((m,_)=>{let O=d[m],k=d[_];return(O!==void 0?O:0)-(k!==void 0?k:0)}),v=(g.length-1)/2;for(let m=Math.floor(v),_=Math.ceil(v);m<=_;++m){let O=g[m];if(O===void 0)continue;let k=d[O];if(k!==void 0&&s[b]===b&&l<k&&d[O]!==u&&!qr(r,b,O)){let x=o[O];x!==void 0&&(s[O]=b,s[b]=o[b]=x,l=k,h&&(l=-1,u=(y=d[O])!=null?y:-1,h=!1))}}}})}),{root:o,align:s}}function Jr(e,t,r,n,i=!1){let o={},s=Ur(e,t,r,i),d=i?"borderLeft":"borderRight";function a(p,b){let y=s.nodes().slice(),f={},g=y.pop();for(;g;){if(f[g])p(g);else{f[g]=!0,y.push(g);for(let v of b(g))y.push(v)}g=y.pop()}}function l(p){let b=s.inEdges(p);b?o[p]=b.reduce((y,f)=>{var g;let v=(g=o[f.v])!=null?g:0,m=s.edge(f);return Math.max(y,v+(m!==void 0?m:0))},0):o[p]=0}function u(p){let b=s.outEdges(p),y=Number.POSITIVE_INFINITY;b&&(y=b.reduce((g,v)=>{let m=o[v.w],_=s.edge(v);return Math.min(g,(m!==void 0?m:0)-(_!==void 0?_:0))},Number.POSITIVE_INFINITY));let f=e.node(p);y!==Number.POSITIVE_INFINITY&&f.borderType!==d&&(o[p]=Math.max(o[p]!==void 0?o[p]:0,y))}function h(p){return s.predecessors(p)||[]}function c(p){return s.successors(p)||[]}return a(l,h),a(u,c),Object.keys(n).forEach(p=>{var b;let y=r[p];y!==void 0&&(o[p]=(b=o[y])!=null?b:0)}),o}function Ur(e,t,r,n){let i=new L,o=e.graph(),s=Zr(o.nodesep,o.edgesep,n);return t.forEach(d=>{let a;d.forEach(l=>{let u=r[l];if(u!==void 0){if(i.setNode(u),a!==void 0){let h=r[a];if(h!==void 0){let c=i.edge(h,u);i.setEdge(h,u,Math.max(s(e,l,a),c||0))}}a=l}})}),i}function Kr(e,t){return Object.values(t).reduce((r,n)=>{let i=Number.NEGATIVE_INFINITY,o=Number.POSITIVE_INFINITY;Object.entries(n).forEach(([d,a])=>{let l=en(e,d)/2;i=Math.max(a+l,i),o=Math.min(a-l,o)});let s=i-o;return s<r[0]&&(r=[s,n]),r},[Number.POSITIVE_INFINITY,null])[1]}function Wr(e,t){let r=Object.values(t),n=T(Math.min,r),i=T(Math.max,r);["u","d"].forEach(o=>{["l","r"].forEach(s=>{let d=o+s,a=e[d];if(!a||a===t)return;let l=Object.values(a),u=n-T(Math.min,l);s!=="l"&&(u=i-T(Math.max,l)),u&&(e[d]=$(a,h=>h+u))})})}function Hr(e,t=void 0){let r=e.ul;return r?$(r,(n,i)=>{var o,s;if(t){let a=t.toLowerCase(),l=e[a];if(l&&l[i]!==void 0)return l[i]}let d=Object.values(e).map(a=>{let l=a[i];return l!==void 0?l:0}).sort((a,l)=>a-l);return(((o=d[1])!=null?o:0)+((s=d[2])!=null?s:0))/2}):{}}function Qr(e,t){let r=A(e),n=Object.assign(Br(e,r),zr(e,r)),i={},o;["u","d"].forEach(d=>{o=d==="u"?r:Object.values(r).reverse(),["l","r"].forEach(a=>{a==="r"&&(o=o.map(h=>Object.values(h).reverse()));let l=Xr(e,o,n,h=>(d==="u"?e.predecessors(h):e.successors(h))||[],t),u=Jr(e,o,l.root,l.align,a==="r");a==="r"&&(u=$(u,h=>-h)),i[d+a]=u})});let s=Kr(e,i);return Wr(i,s),Hr(i,e.graph().align)}function Zr(e,t,r){return(n,i,o)=>{let s=n.node(i),d=n.node(o),a=0,l;if(a+=s.width/2,Object.hasOwn(s,"labelpos"))switch(s.labelpos.toLowerCase()){case"l":l=-s.width/2;break;case"r":l=s.width/2;break}if(l&&(a+=r?l:-l),l=void 0,a+=(s.dummy?t:e)/2,a+=(d.dummy?t:e)/2,a+=d.width/2,Object.hasOwn(d,"labelpos"))switch(d.labelpos.toLowerCase()){case"l":l=d.width/2;break;case"r":l=-d.width/2;break}return l&&(a+=r?l:-l),a}}function en(e,t){return e.node(t).width}function we(e,t,r){var n;if(!r)return!1;let i=(n=t.node(e))==null?void 0:n.edgeObj;if(!i||t.node(e).edgeLabel.reversed)return!1;let o=r.indexOf(i?.v),s=r.indexOf(i?.w);return o!==-1&&s!==-1&&o===(s+1)%r.length||o===(s-1)%r.length}function tn(e,t){e=Fe(e),rn(e),Object.entries(Qr(e,t)).forEach(([r,n])=>e.node(r).x=n)}function rn(e){let t=A(e),r=e.graph(),n=r.ranksep,i=r.rankalign,o=0;t.forEach(s=>{let d=s.reduce((a,l)=>{var u;let h=(u=e.node(l).height)!=null?u:0;return a>h?a:h},0);s.forEach(a=>{let l=e.node(a);i==="top"?l.y=o+l.height/2:i==="bottom"?l.y=o+d-l.height/2:l.y=o+d/2}),o+=d+n})}function nn(e,t={}){return He(e,Ye,t),e}function Ee(e,t,r){let n=t;for(;n!==void 0;){let i=e.parent(n);if(i===r)return n;n=i}}function He(e,t,r){let n=e.nodes().filter(f=>e.children(f).length),i={};n.forEach(f=>{let g=e.node(f);if(g&&g.rankdir){let v=new L({multigraph:!0,compound:!0});v.setGraph({rankdir:g.rankdir});let m=e.children(f);m.forEach(E=>{let w={...e.node(E)};v.setNode(E,w);let I=e.parent(E);I&&I!==f&&m.includes(I)&&v.setParent(E,I)});let _=new Set;e.edges().forEach(E=>{let w=Ee(e,E.v,f),I=Ee(e,E.w,f);if(w&&I&&w!==I){let S=`${w}\0${I}`;_.has(S)||(_.add(S),v.setEdge(w,I,{...e.edge(E)}))}}),He(v,t,r);let O=Oe(v);ye(O,t,r),_e(v,O);let k=1/0,x=1/0,N=-1/0,C=-1/0;v.nodes().forEach(E=>{if(E===f)return;let w=v.node(E);w&&typeof w.x=="number"&&typeof w.y=="number"&&typeof w.width=="number"&&typeof w.height=="number"&&(k=Math.min(k,w.x-w.width/2),N=Math.max(N,w.x+w.width/2),x=Math.min(x,w.y-w.height/2),C=Math.max(C,w.y+w.height/2))}),(!isFinite(k)||!isFinite(x)||!isFinite(N)||!isFinite(C))&&(k=x=0,N=C=0);let M=N-k,j=C-x;i[f]={minX:k,minY:x,maxX:N,maxY:C,width:M,height:j,offsetX:k,offsetY:x},g._dagreClusterSubgraph=v}});let o=[],s=f=>{let g=[],v=(e.children(f)||[]).filter(m=>m!==f);for(;v.length>0;){let m=v.shift();g.push(m),(e.children(m)||[]).filter(_=>_!==m).forEach(_=>v.push(_))}return g},d=new Map;n.forEach(f=>{let g=e.node(f);g&&g.rankdir&&i[f]&&d.set(f,(e.children(f)||[]).filter(v=>v!==f))});let a=new Set([...d.values()].flat()),l=new Map;d.forEach((f,g)=>{a.has(g)||l.set(g,s(g))});let u=new Set([...l.values()].flat()),h=f=>{for(let[g,v]of l)if(v.includes(f))return g;return f},c=[];e.edges().forEach(f=>{(u.has(f.v)||u.has(f.w))&&c.push({edge:f,label:e.edge(f)})});let p=new Map;u.forEach(f=>{let g=e.parent(f);p.set(f,typeof g=="string"?g:void 0)}),l.forEach((f,g)=>{let v=e.node(g),m=[];f.forEach(k=>{let x=e.node(k);x&&(m.push({id:k,node:x,parent:p.get(k)}),e.removeNode(k))});let _=c.filter(({edge:k})=>f.includes(k.v)||f.includes(k.w)),O=i[g];v&&(o.push({clusterId:g,subgraph:v._dagreClusterSubgraph,bounds:O,children:f,removedNodes:m,removedEdges:_}),v.width=O.width,v.height=O.height)});let b=new Set;c.forEach(({edge:f,label:g})=>{let v=h(f.v),m=h(f.w);if(v!==m&&e.hasNode(v)&&e.hasNode(m)){let _=`${v}\0${m}`;b.has(_)||(b.add(_),e.setEdge(v,m,{...g,width:0,height:0}))}});let y=Oe(e);ye(y,t,r),_e(e,y),b.forEach(f=>{let g=f.indexOf("\0"),v=f.slice(0,g),m=f.slice(g+1);e.hasEdge(v,m)&&e.removeEdge(v,m)}),o.forEach(({clusterId:f,subgraph:g,bounds:v,removedNodes:m,removedEdges:_})=>{var O,k;let x=e.node(f),N=(O=x?.x)!=null?O:0,C=(k=x?.y)!=null?k:0,M=(v.minX+v.maxX)/2,j=(v.minY+v.maxY)/2;m.forEach(({id:E,node:w,parent:I})=>{e.setNode(E,w),I!==void 0&&e.setParent(E,I)}),_.forEach(({edge:E,label:w})=>{e.setEdge(E,w)}),g.nodes().forEach(E=>{if(E===f)return;let w=g.node(E),I=e.node(E);I&&w&&typeof w.x=="number"&&typeof w.y=="number"&&(I.x=N+(w.x-M),I.y=C+(w.y-j))}),delete x._dagreClusterSubgraph}),n.forEach(f=>{var g,v;let m=e.node(f),_=i[f];if(m&&m.rankdir&&m._dagreClusterSubgraph&&_){let O=m._dagreClusterSubgraph,k=(g=m.x)!=null?g:0,x=(v=m.y)!=null?v:0,N=(_.minX+_.maxX)/2,C=(_.minY+_.maxY)/2;O.nodes().forEach(M=>{if(M===f)return;let j=O.node(M),E=e.node(M);if(E&&j&&typeof j.x=="number"&&typeof j.y=="number"){let w=j.x-N,I=j.y-C;E.x=k+w,E.y=x+I}}),delete m._dagreClusterSubgraph}})}function ye(e,t,r){r?.useDynamic===!1&&(H=null,Q=null),t("    makeSpaceForEdgeLabels",()=>cn(e)),t("    removeSelfEdges",()=>yn(e)),t("    acyclic",()=>Xt(e,H)),t("    nestingGraph.run",()=>br(e)),t("    rank",()=>ar(Fe(e))),t("    injectEdgeLabelProxies",()=>fn(e)),t("    removeEmptyRanks",()=>Mt(e)),t("    nestingGraph.cleanup",()=>Er(e)),t("    normalizeRanks",()=>Lt(e)),t("    assignRankMinMax",()=>gn(e)),t("    removeEdgeLabelProxies",()=>pn(e)),t("    normalize.run",()=>Wt(e)),t("    parentDummyChains",()=>fr(e)),t("    addBorderSegments",()=>yr(e)),t("    order",()=>Ke(e,r,Q)),t("    insertSelfEdges",()=>_n(e)),t("    adjustCoordinateSystem",()=>kr(e)),t("    position",()=>tn(e,r.corePath)),t("    positionSelfEdges",()=>kn(e)),Q=JSON.parse(JSON.stringify(e._nodes)),t("    removeBorderNodes",()=>En(e)),t("    normalize.undo",()=>Qt(e)),t("    fixupEdgeLabelCoords",()=>mn(e)),t("    undoCoordinateSystem",()=>Or(e)),t("    translateGraph",()=>vn(e)),t("    assignNodeIntersects",()=>bn(e)),t("    reversePoints",()=>wn(e)),t("    acyclic.undo",()=>Ut(e)),H=e}function _e(e,t){e.nodes().forEach(r=>{let n=e.node(r),i=t.node(r);n&&(n.x=i.x,n.y=i.y,n.order=i.order,n.rank=i.rank,t.children(r).length&&(n.width=i.width,n.height=i.height))}),e.edges().forEach(r=>{let n=e.edge(r),i=t.edge(r);n.points=i.points,Object.hasOwn(i,"x")&&(n.x=i.x,n.y=i.y)}),e.graph().width=t.graph().width,e.graph().height=t.graph().height}function Oe(e){let t=new L({multigraph:!0,compound:!0}),r=ee(e.graph());return t.setGraph(Object.assign({},sn,Z(r,on),z(r,dn))),e.nodes().forEach(n=>{let i=ee(e.node(n)),o=Z(i,ln);Object.keys(ke).forEach(d=>{o[d]===void 0&&(o[d]=ke[d])}),t.setNode(n,o);let s=e.parent(n);s!==void 0&&t.setParent(n,s)}),e.edges().forEach(n=>{let i=ee(e.edge(n));t.setEdge(n,Object.assign({},un,Z(i,an),z(i,hn)))}),t}function cn(e){let t=e.graph();t.ranksep/=2,e.edges().forEach(r=>{var n;let i=e.edge(r);i.minlen*=2,((n=i.labelpos)!=null?n:"r").toLowerCase()!=="c"&&(t.rankdir==="TB"||t.rankdir==="BT"?i.width+=i.labeloffset:i.height+=i.labeloffset)})}function fn(e){e.edges().forEach(t=>{let r=e.edge(t);if(r.width&&r.height){let n=e.node(t.v),i={rank:(e.node(t.w).rank-n.rank)/2+n.rank,e:t};R(e,"edge-proxy",i,"_ep")}})}function gn(e){let t=0;e.nodes().forEach(r=>{let n=e.node(r);n.borderTop&&(n.minRank=e.node(n.borderTop).rank,n.maxRank=e.node(n.borderBottom).rank,t=Math.max(t,n.maxRank))}),e.graph().maxRank=t}function pn(e){e.nodes().forEach(t=>{let r=e.node(t);if(r.dummy==="edge-proxy"){let n=r;e.edge(n.e).labelRank=r.rank,e.removeNode(t)}})}function vn(e){let t=Number.POSITIVE_INFINITY,r=0,n=Number.POSITIVE_INFINITY,i=0,o=e.graph(),s=o.marginx||0,d=o.marginy||0;function a(l){let u=l.x,h=l.y,c=l.width,p=l.height;t=Math.min(t,u-c/2),r=Math.max(r,u+c/2),n=Math.min(n,h-p/2),i=Math.max(i,h+p/2)}e.nodes().forEach(l=>a(e.node(l))),e.edges().forEach(l=>{let u=e.edge(l);Object.hasOwn(u,"x")&&a(u)}),t-=s,n-=d,e.nodes().forEach(l=>{let u=e.node(l);u.x-=t,u.y-=n}),e.edges().forEach(l=>{let u=e.edge(l);u.points.forEach(h=>{h.x-=t,h.y-=n}),Object.hasOwn(u,"x")&&(u.x-=t),Object.hasOwn(u,"y")&&(u.y-=n)}),o.width=r-t+s,o.height=i-n+d}function bn(e){e.edges().forEach(t=>{if(t.v===t.w)return;let r=e.edge(t),n=e.node(t.v),i=e.node(t.w),o,s;r.points?(o=r.points[0],s=r.points[r.points.length-1]):(r.points=[],o=i,s=n),r.points.unshift(ae(n,o)),r.points.push(ae(i,s))})}function mn(e){e.edges().forEach(t=>{let r=e.edge(t);if(Object.hasOwn(r,"x"))switch((r.labelpos==="l"||r.labelpos==="r")&&(r.width-=r.labeloffset),r.labelpos){case"l":r.x-=r.width/2+r.labeloffset;break;case"r":r.x+=r.width/2+r.labeloffset;break}})}function wn(e){e.edges().forEach(t=>{let r=e.edge(t);r.reversed&&r.points.reverse()})}function En(e){e.nodes().forEach(t=>{if(e.children(t).length){let r=e.node(t),n=e.node(r.borderTop),i=e.node(r.borderBottom),o=e.node(r.borderLeft[r.borderLeft.length-1]),s=e.node(r.borderRight[r.borderRight.length-1]);r.width=Math.abs(s.x-o.x),r.height=Math.abs(i.y-n.y),r.x=o.x+r.width/2,r.y=n.y+r.height/2}}),e.nodes().forEach(t=>{e.node(t).dummy==="border"&&e.removeNode(t)})}function yn(e){e.edges().forEach(t=>{if(t.v===t.w){let r=e.node(t.v);r.selfEdges||(r.selfEdges=[]),r.selfEdges.push({e:t,label:e.edge(t)}),e.removeEdge(t)}})}function _n(e){A(e).forEach(t=>{let r=0;t.forEach((n,i)=>{let o=e.node(n);typeof o.rank!="number"&&(o.rank=0),o.order=i+r,(o.selfEdges||[]).forEach(s=>{R(e,"selfedge",{width:s.label.width,height:s.label.height,rank:o.rank,order:i+ ++r,e:s.e,edgeLabel:s.label},"_se"),(!Array.isArray(s.label.points)||s.label.points.length!==7)&&(s.label.points=[{x:0,y:-10},{x:0,y:-10},{x:0,y:0},{x:0,y:10},{x:0,y:10},{x:0,y:0},{x:0,y:0}])}),delete o.selfEdges})})}function kn(e){e.nodes().forEach(t=>{let r=e.node(t),n=i=>typeof i=="number"&&isFinite(i);if(r.dummy==="selfedge"){let i=r,o=e.node(i.e.v),s=n(o?.x)?o.x:0,d=n(o?.y)?o.y:0,a=n(o?.width)?o.width:0,l=n(o?.height)?o.height:0,u=n(r.x)?r.x:s,h=n(r.y)?r.y:d,c=a/2,p=l/2;i.edgeLabel.points=[{x:u+c,y:h-p},{x:u+c,y:h-p},{x:u,y:h},{x:u-c,y:h+p},{x:u-c,y:h+p},{x:u,y:h},{x:u,y:h}],i.edgeLabel.x=u,i.edgeLabel.y=h,e.setEdge(i.e,i.edgeLabel),e.removeNode(t)}else r&&Array.isArray(r.selfEdges)&&r.selfEdges.forEach(i=>{if(!Array.isArray(i.label.points)||i.label.points.length!==7){let o=n(r.x)?r.x:0,s=n(r.y)?r.y:0,d=n(r.width)?r.width:0,a=n(r.height)?r.height:0,l=d/2,u=a/2;i.label.points=[{x:o+l,y:s-u},{x:o+l,y:s-u},{x:o,y:s},{x:o-l,y:s+u},{x:o-l,y:s+u},{x:o,y:s},{x:o,y:s}]}})})}function Z(e,t){return $(z(e,t),Number)}function ee(e){let t={};return e&&Object.entries(e).forEach(([r,n])=>{typeof r=="string"&&(r=r.toLowerCase()),t[r]=n}),t}function On(e){let t=A(e),r=new L({compound:!0,multigraph:!0}).setGraph({});return e.nodes().forEach(n=>{r.setNode(n,{label:n}),r.setParent(n,"layer"+e.node(n).rank)}),e.edges().forEach(n=>r.setEdge(n.v,n.w,{},n.name)),t.forEach((n,i)=>{let o="layer"+i;r.setNode(o,{rank:"same"}),n.reduce((s,d)=>(r.setEdge(s,d,{style:"invis"}),d))}),r}var Ne,rt,nt,it,xe,ot,je,L,dt,Ie,re,ct,Le,pt,wt,B,Re,Ft,q,Dt,Yt,Vt,Gt,Ve,nr,ir,or,ar,hr,fr,yr,H,Q,on,sn,dn,ln,ke,an,un,hn,Nn,Qe,Ze=et(()=>{Ne=Object.defineProperty,rt=(e,t,r)=>t in e?Ne(e,t,{enumerable:!0,configurable:!0,writable:!0,value:r}):e[t]=r,nt=(e,t)=>{for(var r in t)Ne(e,r,{get:t[r],enumerable:!0})},it=(e,t,r)=>rt(e,typeof t!="symbol"?t+"":t,r),xe={};nt(xe,{Graph:()=>L,alg:()=>re,json:()=>Ie,version:()=>dt});ot=Object.defineProperty,je=(e,t)=>{for(var r in t)ot(e,r,{get:t[r],enumerable:!0})},L=class{constructor(e){this._isDirected=!0,this._isMultigraph=!1,this._isCompound=!1,this._nodes={},this._in={},this._preds={},this._out={},this._sucs={},this._edgeObjs={},this._edgeLabels={},this._nodeCount=0,this._edgeCount=0,this._defaultNodeLabelFn=()=>{},this._defaultEdgeLabelFn=()=>{},e&&(this._isDirected="directed"in e?e.directed:!0,this._isMultigraph="multigraph"in e?e.multigraph:!1,this._isCompound="compound"in e?e.compound:!1),this._isCompound&&(this._parent={},this._children={},this._children["\0"]={})}isDirected(){return this._isDirected}isMultigraph(){return this._isMultigraph}isCompound(){return this._isCompound}setGraph(e){return this._label=e,this}graph(){return this._label}setDefaultNodeLabel(e){return typeof e!="function"?this._defaultNodeLabelFn=()=>e:this._defaultNodeLabelFn=e,this}nodeCount(){return this._nodeCount}nodes(){return Object.keys(this._nodes)}sources(){return this.nodes().filter(e=>Object.keys(this._in[e]).length===0)}sinks(){return this.nodes().filter(e=>Object.keys(this._out[e]).length===0)}setNodes(e,t){return e.forEach(r=>{t!==void 0?this.setNode(r,t):this.setNode(r)}),this}setNode(e,t){return e in this._nodes?(arguments.length>1&&(this._nodes[e]=t),this):(this._nodes[e]=arguments.length>1?t:this._defaultNodeLabelFn(e),this._isCompound&&(this._parent[e]="\0",this._children[e]={},this._children["\0"][e]=!0),this._in[e]={},this._preds[e]={},this._out[e]={},this._sucs[e]={},++this._nodeCount,this)}node(e){return this._nodes[e]}hasNode(e){return e in this._nodes}removeNode(e){if(e in this._nodes){let t=r=>this.removeEdge(this._edgeObjs[r]);delete this._nodes[e],this._isCompound&&(this._removeFromParentsChildList(e),delete this._parent[e],this.children(e).forEach(r=>{this.setParent(r)}),delete this._children[e]),Object.keys(this._in[e]).forEach(t),delete this._in[e],delete this._preds[e],Object.keys(this._out[e]).forEach(t),delete this._out[e],delete this._sucs[e],--this._nodeCount}return this}setParent(e,t){if(!this._isCompound)throw new Error("Cannot set parent in a non-compound graph");if(t===void 0)t="\0";else{t+="";for(let r=t;r!==void 0;r=this.parent(r))if(r===e)throw new Error("Setting "+t+" as parent of "+e+" would create a cycle");this.setNode(t)}return this.setNode(e),this._removeFromParentsChildList(e),this._parent[e]=t,this._children[t][e]=!0,this}parent(e){if(this._isCompound){let t=this._parent[e];if(t!=="\0")return t}}children(e="\0"){if(this._isCompound){let t=this._children[e];if(t)return Object.keys(t)}else{if(e==="\0")return this.nodes();if(this.hasNode(e))return[]}return[]}predecessors(e){let t=this._preds[e];if(t)return Object.keys(t)}successors(e){let t=this._sucs[e];if(t)return Object.keys(t)}neighbors(e){let t=this.predecessors(e);if(t){let r=new Set(t);for(let n of this.successors(e))r.add(n);return Array.from(r.values())}}isLeaf(e){let t;return this.isDirected()?t=this.successors(e):t=this.neighbors(e),t.length===0}filterNodes(e){let t=new this.constructor({directed:this._isDirected,multigraph:this._isMultigraph,compound:this._isCompound});t.setGraph(this.graph()),Object.entries(this._nodes).forEach(([i,o])=>{e(i)&&t.setNode(i,o)}),Object.values(this._edgeObjs).forEach(i=>{t.hasNode(i.v)&&t.hasNode(i.w)&&t.setEdge(i,this.edge(i))});let r={},n=i=>{let o=this.parent(i);return!o||t.hasNode(o)?(r[i]=o??void 0,o??void 0):o in r?r[o]:n(o)};return this._isCompound&&t.nodes().forEach(i=>t.setParent(i,n(i))),t}setDefaultEdgeLabel(e){return typeof e!="function"?this._defaultEdgeLabelFn=()=>e:this._defaultEdgeLabelFn=e,this}edgeCount(){return this._edgeCount}edges(){return Object.values(this._edgeObjs)}setPath(e,t){return e.reduce((r,n)=>(t!==void 0?this.setEdge(r,n,t):this.setEdge(r,n),n)),this}setEdge(e,t,r,n){let i,o,s,d,a=!1;typeof e=="object"&&e!==null&&"v"in e?(i=e.v,o=e.w,s=e.name,arguments.length===2&&(d=t,a=!0)):(i=e,o=t,s=n,arguments.length>2&&(d=r,a=!0)),i=""+i,o=""+o,s!==void 0&&(s=""+s);let l=D(this._isDirected,i,o,s);if(l in this._edgeLabels)return a&&(this._edgeLabels[l]=d),this;if(s!==void 0&&!this._isMultigraph)throw new Error("Cannot set a named edge when isMultigraph = false");this.setNode(i),this.setNode(o),this._edgeLabels[l]=a?d:this._defaultEdgeLabelFn(i,o,s);let u=st(this._isDirected,i,o,s);return i=u.v,o=u.w,Object.freeze(u),this._edgeObjs[l]=u,de(this._preds[o],i),de(this._sucs[i],o),this._in[o][l]=u,this._out[i][l]=u,this._edgeCount++,this}edge(e,t,r){let n=arguments.length===1?J(this._isDirected,e):D(this._isDirected,e,t,r);return this._edgeLabels[n]}edgeAsObj(e,t,r){let n=arguments.length===1?this.edge(e):this.edge(e,t,r);return typeof n!="object"?{label:n}:n}hasEdge(e,t,r){return(arguments.length===1?J(this._isDirected,e):D(this._isDirected,e,t,r))in this._edgeLabels}removeEdge(e,t,r){let n=arguments.length===1?J(this._isDirected,e):D(this._isDirected,e,t,r),i=this._edgeObjs[n];if(i){let o=i.v,s=i.w;delete this._edgeLabels[n],delete this._edgeObjs[n],le(this._preds[s],o),le(this._sucs[o],s),delete this._in[s][n],delete this._out[o][n],this._edgeCount--}return this}inEdges(e,t){return this.isDirected()?this.filterEdges(this._in[e],e,t):this.nodeEdges(e,t)}outEdges(e,t){return this.isDirected()?this.filterEdges(this._out[e],e,t):this.nodeEdges(e,t)}nodeEdges(e,t){if(e in this._nodes)return this.filterEdges({...this._in[e],...this._out[e]},e,t)}_removeFromParentsChildList(e){delete this._children[this._parent[e]][e]}filterEdges(e,t,r){if(!e)return;let n=Object.values(e);return r?n.filter(i=>i.v===t&&i.w===r||i.v===r&&i.w===t):n}};dt="4.0.1",Ie={};je(Ie,{read:()=>ht,write:()=>lt});re={};je(re,{CycleException:()=>B,bellmanFord:()=>Ce,components:()=>gt,dijkstra:()=>G,dijkstraAll:()=>bt,findCycles:()=>mt,floydWarshall:()=>Et,isAcyclic:()=>_t,postorder:()=>Ot,preorder:()=>Nt,prim:()=>xt,shortestPaths:()=>jt,tarjan:()=>Me,topsort:()=>Te});ct=()=>1;Le=class{constructor(){this._arr=[],this._keyIndices={}}size(){return this._arr.length}keys(){return this._arr.map(e=>e.key)}has(e){return e in this._keyIndices}priority(e){let t=this._keyIndices[e];if(t!==void 0)return this._arr[t].priority}min(){if(this.size()===0)throw new Error("Queue underflow");return this._arr[0].key}add(e,t){let r=this._keyIndices,n=String(e);if(!(n in r)){let i=this._arr,o=i.length;return r[n]=o,i.push({key:n,priority:t}),this._decrease(o),!0}return!1}removeMin(){this._swap(0,this._arr.length-1);let e=this._arr.pop();return delete this._keyIndices[e.key],this._heapify(0),e.key}decrease(e,t){let r=this._keyIndices[e];if(r===void 0)throw new Error(`Key not found: ${e}`);let n=this._arr[r].priority;if(t>n)throw new Error(`New priority is greater than current priority. Key: ${e} Old: ${n} New: ${t}`);this._arr[r].priority=t,this._decrease(r)}_heapify(e){let t=this._arr,r=2*e,n=r+1,i=e;r<t.length&&(i=t[r].priority<t[i].priority?r:i,n<t.length&&(i=t[n].priority<t[i].priority?n:i),i!==e&&(this._swap(e,i),this._heapify(i)))}_decrease(e){let t=this._arr,r=t[e].priority,n;for(;e!==0&&(n=e>>1,!(t[n].priority<r));)this._swap(e,n),e=n}_swap(e,t){let r=this._arr,n=this._keyIndices,i=r[e],o=r[t];r[e]=o,r[t]=i,n[o.key]=e,n[i.key]=t}},pt=()=>1;wt=()=>1;B=class extends Error{constructor(...e){super(...e)}};Re=65535;Ft=0;q="\0";Dt="3.1.0",Yt=class{constructor(){it(this,"_sentinel");let e={};e._next=e._prev=e,this._sentinel=e}dequeue(){let e=this._sentinel,t=e._prev;if(t!==e)return he(t),t}enqueue(e){let t=this._sentinel;e._prev&&e._next&&he(e),e._next=t._next,t._next._prev=e,t._next=e,e._prev=t}toString(){let e=[],t=this._sentinel,r=t._prev;for(;r!==t;)e.push(JSON.stringify(r,At)),r=r._prev;return"["+e.join(", ")+"]"}};Vt=Yt,Gt=()=>1;Ve=Zt;({preorder:nr,postorder:ir}=re),or=P;P.initLowLimValues=se;P.initCutValues=oe;P.calcCutValue=Ge;P.leaveEdge=ze;P.enterEdge=$e;P.exchangeEdges=qe;ar=ur;hr=ie;fr=gr;yr=_r;H=null,Q=null;on=["nodesep","edgesep","ranksep","marginx","marginy"],sn={ranksep:50,edgesep:20,nodesep:50,rankdir:"TB",rankalign:"center"},dn=["acyclicer","ranker","rankdir","align","rankalign"],ln=["width","height","rank"],ke={width:0,height:0},an=["minlen","weight","width","height","labeloffset"],un={minlen:1,weight:1,width:0,height:0,labeloffset:10,labelpos:"r"},hn=["labelpos"];Nn={graphlib:xe,version:Dt,layout:nn,debug:On,util:{time:Pt,notime:Ye}},Qe=Nn;});var xn=tt(()=>{Ze();window.dagre=Qe});xn();})();
+/*! Bundled license information:
+
+@dagrejs/dagre/dist/dagre.esm.js:
+  (*! For license information please see dagre.esm.js.LEGAL.txt *)
+*/
+
+</script><script>
+/* FortiToolkit core — pure logic, no DOM. Testable under node.
+ * Ported from the PowerShell FortiToolkit.Core / .Rules / NetworkTab.
+ * Design rules kept from CLAUDE.md:
+ *  - reference analysis has NO field whitelist (scan every value)
+ *  - built-ins never deleted (hard stop, independent of analysis)
+ *  - missing key != unset (rules declare a Default)
+ *  - rules run on the object tree, one object at a time
+ *  - every finding carries a line number
+ *  - connected route belongs to the interface's assigned vdom (set vdom)
+ */
+(function (root) {
+  'use strict';
+
+  // ---------- helpers ----------
+  function stripQuotes(v) {
+    if (v == null) return '';
+    v = String(v);
+    if (v.length > 1 && v[0] === '"' && v[v.length - 1] === '"') {
+      return v.substring(1, v.length - 1);
+    }
+    return v;
+  }
+
+  // split a value into tokens, honouring "quoted names"
+  function splitTokens(value) {
+    if (!value) return [];
+    if (value.indexOf('"') < 0) {
+      return value.split(/\s+/).filter(function (x) { return x.length; });
+    }
+    var out = [], re = /"([^"]*)"|(\S+)/g, m;
+    while ((m = re.exec(value)) !== null) {
+      out.push(m[1] !== undefined ? m[1] : m[2]);
+    }
+    return out;
+  }
+
+  function maskBits(mask) {
+    if (mask == null) return '';
+    mask = String(mask).trim();
+    if (mask.length <= 2 && /^\d+$/.test(mask)) return parseInt(mask, 10);
+    var parts = mask.split('.');
+    if (parts.length !== 4) return mask;
+    var c = 0;
+    for (var i = 0; i < 4; i++) {
+      var b = parseInt(parts[i], 10);
+      if (isNaN(b)) return mask;
+      while (b) { c += b & 1; b >>= 1; }
+    }
+    return c;
+  }
+
+  // "10.1.1.5 255.255.255.0" -> "10.1.1.5/24"
+  function netCidr(raw) {
+    if (!raw) return '';
+    var v = stripQuotes(raw);
+    var sp = v.indexOf(' ');
+    if (sp < 0) return v;
+    var ip = v.substring(0, sp);
+    var mk = v.substring(sp + 1).trim();
+    if (ip === '0.0.0.0' && (mk === '0.0.0.0' || mk === '')) return '0.0.0.0/0';
+    return ip + '/' + maskBits(mk);
+  }
+
+  // mask host bits off: interface ip "10.1.1.5/24" -> network "10.1.1.0/24"
+  function connectedNet(cidr) {
+    var slash = cidr.indexOf('/');
+    if (slash < 0) return cidr;
+    var ipStr = cidr.substring(0, slash);
+    var bits = parseInt(cidr.substring(slash + 1), 10);
+    if (isNaN(bits)) return cidr;
+    var parts = ipStr.split('.');
+    if (parts.length !== 4) return cidr; // ipv4 only; ipv6 skipped upstream
+    var bytes = parts.map(function (p) { return parseInt(p, 10) & 0xFF; });
+    var rem = bits;
+    for (var i = 0; i < 4; i++) {
+      if (rem >= 8) { rem -= 8; continue; }
+      if (rem <= 0) { bytes[i] = 0; continue; }
+      var m = (0xFF << (8 - rem)) & 0xFF;
+      bytes[i] = bytes[i] & m;
+      rem = 0;
+    }
+    return bytes.join('.') + '/' + bits;
+  }
+
+  // sort key so any CIDR orders correctly (family, then numeric address, then prefix)
+  function routeSortKey(dst) {
+    if (!dst) return '9|';
+    var slash = dst.indexOf('/');
+    var ip = slash < 0 ? dst : dst.substring(0, slash);
+    var pfx = slash < 0 ? 32 : parseInt(dst.substring(slash + 1), 10);
+    var parts = ip.split('.');
+    if (parts.length === 4) {
+      var num = 0;
+      for (var i = 0; i < 4; i++) num = num * 256 + (parseInt(parts[i], 10) & 0xFF);
+      // pad to fixed width for lexical sort
+      return '4|' + String(num).padStart(11, '0') + '|' + String(pfx).padStart(3, '0');
+    }
+    return '6|' + ip + '|' + String(pfx).padStart(3, '0'); // ipv6: lexical is fine enough
+  }
+
+  // ---------- built-ins (hard stop, never deleted) ----------
+  var BUILTIN = new Set([
+    'all','none','ALL','NONE','ANY','any',
+    'SSLVPN_TUNNEL_ADDR1','SSLVPN_TUNNEL_IPv6_ADDR1','FABRIC_DEVICE',
+    'FIREWALL_AUTH_PORTAL_ADDRESS','login.microsoftonline.com',
+    'always','default','Deny','deny','none-schedule',
+    'ALL_TCP','ALL_UDP','ALL_ICMP','ALL_ICMP6','DNS','HTTP','HTTPS','SSH','PING',
+    'PING6','SMTP','SMTPS','POP3','IMAP','NTP','SNMP','SYSLOG','LDAP','RADIUS',
+    'FTP','TELNET','TFTP','DHCP','IKE','ESP','GRE','TRACEROUTE','webproxy'
+  ]);
+  var BUILTIN_PREFIX = ['SSLVPN_', 'FABRIC_', 'FIREWALL_AUTH_', 'Fortinet_', 'FCTUEMS_', 'g-'];
+  function isBuiltin(name) {
+    if (BUILTIN.has(name)) return true;
+    for (var i = 0; i < BUILTIN_PREFIX.length; i++) {
+      if (name.indexOf(BUILTIN_PREFIX[i]) === 0) return true;
+    }
+    return false;
+  }
+
+  // sections whose objects are cleanup candidates (the WatchSet)
+  var WATCH = new Set([
+    'firewall address','firewall address6','firewall addrgrp','firewall addrgrp6',
+    'firewall service custom','firewall service group','firewall vip','firewall vip6',
+    'firewall vipgrp','firewall ippool','firewall ippool6','firewall schedule recurring',
+    'firewall schedule onetime','firewall schedule group'
+  ]);
+  var GROUPSET = new Set([
+    'firewall addrgrp','firewall addrgrp6','firewall service group','firewall vipgrp',
+    'firewall vipgrp6','firewall schedule group','user group'
+  ]);
+  var SKIPKEYS = new Set(['comment','comments','description','uuid','q_origin_key']);
+
+  // ---------- parser ----------
+  // Returns { objects:[{V,S,N,T,L,Sect}], header:[], vdomMode:bool }
+  function parseConfig(text) {
+    var lines = text.split(/\r?\n/);
+    var objects = [];
+    var header = [];
+    var sectObjs = {};        // "vdom|path" -> settings object
+    var stack = [];
+    var curVdom = 'root', curSeg = '', curPath = '', curObj = null;
+    var depth = 0, sawVdom = false;
+    // multi-line value state (certificates, banners)
+    var contKey = null, contVal = null, contObj = null;
+
+    for (var i = 0; i < lines.length; i++) {
+      var rawLine = lines[i];
+      var line = rawLine.trim();
+
+      // --- inside an unclosed quoted value: swallow until it closes ---
+      if (contKey !== null) {
+        contVal += '\n' + rawLine;
+        if (rawLine.indexOf('"') >= 0) { // naive close; good enough for PEM/banner
+          if (contObj) contObj.T[contKey] = contVal;
+          contKey = contVal = contObj = null;
+        }
+        continue;
+      }
+
+      if (line.length === 0) continue;
+      var c0 = line[0];
+
+      if (c0 === 's' && line.length > 4 && line.substring(0, 4) === 'set ') {
+        var rest = line.substring(4);
+        var sp = rest.indexOf(' ');
+        var sk = rest, sv = '';
+        if (sp >= 0) { sk = rest.substring(0, sp); sv = rest.substring(sp + 1).trim(); }
+        // open, unclosed quote -> enter continuation mode
+        var opensQuote = sv.length > 0 && sv[0] === '"' &&
+          !(sv.length > 1 && sv[sv.length - 1] === '"');
+        var target = curObj || (curPath !== '' ? sectAt(sectObjs, curVdom, curPath, i) : null);
+        if (target) {
+          target.T[sk] = sv;
+          if (opensQuote) { contKey = sk; contVal = sv; contObj = target; }
+        }
+        continue;
+      }
+
+      if (c0 === 'n' && line === 'next') {
+        if (curObj) { if (curSeg !== 'vdom') objects.push(curObj); curObj = null; }
+        continue;
+      }
+
+      if (c0 === 'e' && line.length > 5 && line.substring(0, 5) === 'edit ') {
+        var name = stripQuotes(line.substring(5).trim());
+        if (curSeg === 'vdom' && depth === 1) curVdom = name;
+        curObj = { V: curVdom, S: curPath, N: name, T: {}, L: i + 1, Sect: false };
+        continue;
+      }
+
+      if (c0 === 'e' && line === 'end') {
+        if (curObj) { if (curSeg !== 'vdom') objects.push(curObj); curObj = null; }
+        if (stack.length > 0) {
+          var f = stack.pop();
+          curSeg = f[0]; curPath = f[1]; curObj = f[2]; curVdom = f[3]; depth--;
+        } else {
+          curSeg = ''; curPath = ''; curVdom = 'root'; depth = 0;
+        }
+        continue;
+      }
+
+      if (c0 === 'c' && line.length > 7 && line.substring(0, 7) === 'config ') {
+        stack.push([curSeg, curPath, curObj, curVdom]);
+        depth++;
+        var seg = line.substring(7).trim();
+        if (curPath === '' || curPath === 'vdom' || curPath === 'global') curPath = seg;
+        else curPath = curPath + '/' + seg;
+        curSeg = seg; curObj = null;
+        if (seg === 'vdom') sawVdom = true;
+        else if (seg === 'global') curVdom = 'global';
+        continue;
+      }
+
+      if (c0 === '#') {
+        if (depth === 0 && header.length < 40) header.push(line);
+        continue;
+      }
+    }
+
+    for (var key in sectObjs) if (sectObjs.hasOwnProperty(key)) objects.push(sectObjs[key]);
+    var truncated = stack.length > 0; // block never closed = truncated file
+    return { objects: objects, header: header, vdomMode: sawVdom,
+             truncated: truncated, lines: lines };
+  }
+
+  function sectAt(sectObjs, vdom, path, i) {
+    var id = vdom + '|' + path;
+    var so = sectObjs[id];
+    if (!so) {
+      so = { V: vdom, S: path, N: '(settings)', T: {}, L: i + 1, Sect: true };
+      sectObjs[id] = so;
+    }
+    return so;
+  }
+
+  // ---------- cleanup: reference analysis ----------
+  // root = anything NOT in the WatchSet. If no non-skip token of any object
+  // names a watched object, that watched object is unreferenced.
+  function invokeCleanup(parsed) {
+    var objs = parsed.objects;
+    // index watched objects by vdom -> name
+    var byV = {};
+    var watched = [];
+    objs.forEach(function (o) {
+      if (o.Sect) return;
+      if (!WATCH.has(o.S)) return;
+      watched.push(o);
+      (byV[o.V] || (byV[o.V] = {}))[o.N] = o;
+    });
+    var used = new Set();
+    // scan EVERY value of EVERY object (no field whitelist)
+    objs.forEach(function (o) {
+      var vmap = byV[o.V], gmap = byV['global'];
+      var useGlobal = (o.V !== 'global' && gmap);
+      for (var k in o.T) {
+        if (!o.T.hasOwnProperty(k)) continue;
+        if (SKIPKEYS.has(k)) continue;
+        var toks = splitTokens(o.T[k]);
+        for (var t = 0; t < toks.length; t++) {
+          var tok = toks[t];
+          var hit = (vmap && vmap[tok]) || (useGlobal && gmap[tok]);
+          if (hit) used.add(hit.V + '|' + hit.N + '|' + hit.S);
+        }
+      }
+    });
+    var safe = [], held = [], emptyGrp = [];
+    watched.forEach(function (o) {
+      var id = o.V + '|' + o.N + '|' + o.S;
+      var referenced = used.has(id);
+      // empty group: a group section object with no member tokens
+      if (GROUPSET.has(o.S)) {
+        var mem = splitTokens(o.T['member'] || '');
+        if (mem.length === 0) emptyGrp.push(mkRec(o, 'empty group'));
+      }
+      if (referenced) return;
+      if (isBuiltin(o.N)) { held.push(mkRec(o, 'built-in')); return; }
+      safe.push(mkRec(o, 'unreferenced'));
+    });
+    return { safe: safe, held: held, emptyGrp: emptyGrp };
+  }
+
+  function mkRec(o, why) {
+    return { V: o.V, S: o.S, Kind: o.S, Type: shortType(o.S), N: o.N,
+             Val: previewVal(o), Why: why, L: o.L };
+  }
+  function shortType(s) { var p = s.split(' '); return p[p.length - 1]; }
+  function previewVal(o) {
+    return o.T['subnet'] || o.T['member'] || o.T['start-ip'] ||
+           o.T['extip'] || o.T['tcp-portrange'] || '';
+  }
+
+  // ---------- duplicate detection ----------
+  // group objects with the same normalized value within a section family
+  var DUPSEC = {
+    'firewall address': 'addr', 'firewall address6': 'addr',
+    'firewall addrgrp': 'grp', 'firewall addrgrp6': 'grp',
+    'firewall service custom': 'svc', 'firewall service group': 'svcgrp',
+    'firewall vip': 'vip', 'firewall vip6': 'vip',
+    'firewall ippool': 'pool', 'firewall ippool6': 'pool',
+    'router static': 'route', 'router static6': 'route'
+  };
+  function dupKey(o) {
+    var t = o.T;
+    switch (DUPSEC[o.S]) {
+      case 'addr':
+        if (t['subnet']) return 'subnet:' + netCidr(t['subnet']);
+        if (t['start-ip']) return 'range:' + t['start-ip'] + '-' + (t['end-ip'] || '');
+        if (t['fqdn']) return 'fqdn:' + t['fqdn'];
+        return null;
+      case 'grp': return 'members:' + sortedTokens(t['member']);
+      case 'svc':
+        return 'svc:' + [t['protocol'], t['tcp-portrange'], t['udp-portrange']].join('|');
+      case 'svcgrp': return 'members:' + sortedTokens(t['member']);
+      case 'vip':
+        return 'vip:' + [t['extip'], t['mappedip'], t['extport'], t['mappedport']].join('|');
+      case 'pool': return 'pool:' + [t['startip'], t['endip']].join('-');
+      case 'route':
+        return 'route:' + netCidr(t['dst'] || '') + '>' + (t['gateway'] || '');
+      default: return null;
+    }
+  }
+  function sortedTokens(v) { return splitTokens(v || '').slice().sort().join(','); }
+
+  function findDuplicates(parsed, crossVdom) {
+    var groups = {};
+    parsed.objects.forEach(function (o) {
+      if (o.Sect || !DUPSEC[o.S]) return;
+      var k = dupKey(o);
+      if (!k) return;
+      var scope = crossVdom ? DUPSEC[o.S] : (o.V + '|' + DUPSEC[o.S]);
+      var gk = scope + '||' + k;
+      (groups[gk] || (groups[gk] = [])).push(o);
+    });
+    var out = [];
+    for (var gk in groups) {
+      if (!groups.hasOwnProperty(gk)) continue;
+      var g = groups[gk];
+      if (g.length < 2) continue;
+      // keeper = the one actually referenced (falls back to first)
+      var names = g.map(function (x) { return x.N; });
+      out.push({
+        V: g[0].V, Cat: shortType(g[0].S),
+        K: gk.split('||')[1],
+        Cnt: g.length, Keep: names[0], Drop: names.slice(1).join(', '),
+        L: g[0].L, members: g,
+        DropObjs: g.slice(1).map(function (x) { return { V: x.V, S: x.S, N: x.N }; })
+      });
+    }
+    return out;
+  }
+
+  // ---------- network model: routing (static + connected) ----------
+  function buildRoutes(parsed) {
+    var routes = [];
+    parsed.objects.forEach(function (o) {
+      var t = o.T;
+      // static routes
+      if ((o.S === 'router static' || o.S === 'router static6') && !o.Sect) {
+        var dst = netCidr(t['dst'] || '');
+        if (!dst) dst = stripQuotes(t['dstaddr'] || '') || '0.0.0.0/0';
+        var gw = stripQuotes(t['gateway'] || '');
+        if (stripQuotes(t['blackhole'] || '') === 'enable') gw = '(blackhole)';
+        routes.push({
+          V: o.V, Src: 'static', Seq: o.N, Dst: dst, Gw: gw,
+          sortKey: routeSortKey(dst), Dev: stripQuotes(t['device'] || ''),
+          Dist: stripQuotes(t['distance'] || '10'), Pri: stripQuotes(t['priority'] || ''),
+          Status: stripQuotes(t['status'] || 'enable'),
+          Cmt: stripQuotes(t['comment'] || ''), L: o.L
+        });
+      }
+      // connected routes from interface subnets
+      if (o.S === 'system interface' && !o.Sect) {
+        var mode = stripQuotes(t['mode'] || '');
+        if (mode === 'dhcp' || mode === 'pppoe') return;
+        var addr = netCidr(t['ip'] || '');
+        if (!addr || addr.indexOf('/') < 0) return;
+        if (addr === '0.0.0.0/0' || addr === '0.0.0.0/32') return;
+        if (addr.indexOf(':') >= 0) return; // ipv6 skipped
+        var st = stripQuotes(t['status'] || '');
+        if (st === 'down') return;
+        var net = connectedNet(addr);
+        // vdom assignment: interface lives under global, 'set vdom' says where it belongs
+        var ivd = stripQuotes(t['vdom'] || '') || o.V;
+        var cmt = stripQuotes(t['alias'] || '') || stripQuotes(t['description'] || '');
+        routes.push({
+          V: ivd, Src: 'connected', Seq: '', Dst: net, Gw: '',
+          sortKey: routeSortKey(net), Dev: o.N, Dist: '0', Pri: '',
+          Status: st || 'up', Cmt: cmt, L: o.L
+        });
+      }
+    });
+    routes.sort(function (a, b) {
+      if (a.V !== b.V) return a.V < b.V ? -1 : 1;
+      return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0;
+    });
+    return routes;
+  }
+
+  // ---------- compliance engine ----------
+  function getVal(obj, cond) {
+    if (Object.prototype.hasOwnProperty.call(obj.T, cond.key)) return String(obj.T[cond.key]);
+    if ('def' in cond) return String(cond.def);
+    return null;
+  }
+  function testCond(obj, cond) {
+    var raw = getVal(obj, cond);
+    var op = cond.op;
+    if (op === 'exists') return raw != null && raw !== '';
+    if (op === 'missing') return raw == null || raw === '';
+    if (raw == null) return false;
+    var val = stripQuotes(raw);
+    var want = cond.val;
+    switch (op) {
+      case 'eq': return val === want;
+      case 'ne': return val !== want;
+      case 'in': return want.indexOf(val) >= 0;
+      case 'notin': return want.indexOf(val) < 0;
+      case 'has': return splitTokens(val).indexOf(want) >= 0;
+      case 'nothas': return splitTokens(val).indexOf(want) < 0;
+      case 'gte': return parseFloat(val) >= parseFloat(want);
+      case 'lte': return parseFloat(val) <= parseFloat(want);
+      case 'match': try { return new RegExp(want).test(val); } catch (e) { return false; }
+      case 'notmatch': try { return !(new RegExp(want).test(val)); } catch (e) { return false; }
+      default: return false;
+    }
+  }
+  function failDetail(obj, conds) {
+    for (var i = 0; i < conds.length; i++) {
+      var c = conds[i];
+      if (testCond(obj, c)) continue;
+      var raw = getVal(obj, c);
+      var shown = (raw == null || raw === '') ? 'not set' : stripQuotes(raw);
+      if (raw != null && !Object.prototype.hasOwnProperty.call(obj.T, c.key)) shown += ' (default)';
+      var want = Array.isArray(c.val) ? c.val.join(', ') : c.val;
+      switch (c.op) {
+        case 'exists': return c.key + ' is not configured';
+        case 'missing': return c.key + ' is set to ' + shown + ' but must not be';
+        case 'eq': return c.key + ' = ' + shown + ', expected ' + want;
+        case 'ne': return c.key + ' = ' + shown + ', must not be ' + want;
+        case 'in': return c.key + ' = ' + shown + ', expected one of: ' + want;
+        case 'notin': return c.key + ' = ' + shown + ', must not be any of: ' + want;
+        case 'has': return c.key + ' = ' + shown + ', must include: ' + want;
+        case 'nothas': return c.key + ' = ' + shown + ', must not include: ' + want;
+        case 'gte': return c.key + ' = ' + shown + ', must be at least ' + want;
+        case 'lte': return c.key + ' = ' + shown + ', must be at most ' + want;
+        case 'match': return c.key + ' = ' + shown + ', does not match required pattern ' + want;
+        case 'notmatch': return c.key + ' = ' + shown + ', matches a forbidden pattern';
+        default: return c.key + ' = ' + shown;
+      }
+    }
+    return '';
+  }
+
+  function invokeCompliance(parsed, pack) {
+    var results = [];
+    // index objects by "vdom|section"
+    var idx = {};
+    parsed.objects.forEach(function (o) {
+      (idx[o.V + '|' + o.S] || (idx[o.V + '|' + o.S] = [])).push(o);
+    });
+    var vdoms = {};
+    parsed.objects.forEach(function (o) { vdoms[o.V] = true; });
+    var zoneList = Object.keys(vdoms);
+
+    pack.forEach(function (rule) {
+      // device-level checks (VDOM enabled, firmware) evaluate once against the whole config
+      if (rule.mode === 'device') {
+        var res = rule.check(parsed);
+        results.push({
+          Sev: rule.sev, V: parsed.vdomMode ? 'global' : 'root', Id: rule.id,
+          Cat: rule.cat, Title: rule.title, Obj: '(device)', Scope: 'device',
+          Pass: res.pass, Skip: false, Detail: res.pass ? '' : res.detail,
+          Line: res.line || 0, Why: rule.why, Fix: rule.fix || [], SectLevel: true
+        });
+        return;
+      }
+      var targets;
+      if (rule.zone === 'global') targets = parsed.vdomMode ? ['global'] : ['root'];
+      else if (rule.zone === 'vdom') {
+        targets = parsed.vdomMode ? zoneList.filter(function (z) { return z !== 'global'; }) : ['root'];
+      } else targets = zoneList;
+      if (targets.length === 0) targets = ['root'];
+
+      targets.forEach(function (z) {
+        var objs = idx[z + '|' + rule.section] || [];
+        if (rule.mode === 'each') {
+          if (objs.length === 0) {
+            results.push(skipRow(rule, z));
+            return;
+          }
+          objs.forEach(function (o) {
+            var pass = rule.conds.every(function (c) { return testCond(o, c); });
+            results.push({
+              Sev: rule.sev, V: z, Id: rule.id, Cat: rule.cat, Title: rule.title,
+              Obj: o.N, Scope: o.S, Pass: pass, Skip: false,
+              Detail: pass ? '' : failDetail(o, rule.conds), Line: o.L, Why: rule.why,
+              Fix: rule.fix || [], SectLevel: false
+            });
+          });
+        } else { // section
+          if (objs.length === 0) { results.push(skipRow(rule, z)); return; }
+          var o = objs[0];
+          var pass = rule.conds.every(function (c) { return testCond(o, c); });
+          results.push({
+            Sev: rule.sev, V: z, Id: rule.id, Cat: rule.cat, Title: rule.title,
+            Obj: '(settings)', Scope: rule.section, Pass: pass, Skip: false,
+            Detail: pass ? '' : failDetail(o, rule.conds), Line: o.L, Why: rule.why,
+            Fix: rule.fix || [], SectLevel: true
+          });
+        }
+      });
+    });
+    return results;
+  }
+  function skipRow(rule, z) {
+    return { Sev: rule.sev, V: z, Id: rule.id, Cat: rule.cat, Title: rule.title,
+             Obj: '-', Scope: rule.section, Pass: true, Skip: true,
+             Detail: 'Not applicable (section absent)', Line: 0, Why: rule.why };
+  }
+
+  // device identity: hostname (system global) + model (config-version header).
+  // Serial is not present in a plain config export, so hostname is the label.
+  function deviceInfo(parsed) {
+    var d = { hostname: '', model: '', firmware: '', build: '', opmode: '',
+              alias: '', timezone: '', adminSport: '', adminSsh: '',
+              ha: '', vdomMode: parsed.vdomMode ? 'multi-vdom' : 'single',
+              dns: '', ntp: '' };
+    // config-version header: model-firmware-FW-buildNNNN-date:opmode=x:vdom=y
+    (parsed.header || []).forEach(function (h) {
+      var m = h.match(/config-version=([^:]+)/);
+      if (m) {
+        var v = m[1]; // e.g. FGT60F-7.2.5-FW-build1517-230608
+        var mm = v.match(/^([A-Za-z0-9]+)-([0-9.]+)-FW-build(\d+)/);
+        if (mm) { d.model = mm[1]; d.firmware = mm[2]; d.build = mm[3]; }
+        else { var m2 = v.match(/^([A-Za-z0-9]+)-/); if (m2) d.model = m2[1]; }
+      }
+      var op = h.match(/opmode=(\d+)/); if (op) d.opmode = op[1] === '0' ? 'NAT' : 'Transparent';
+    });
+    // system global settings
+    parsed.objects.forEach(function (o) {
+      if (o.S === 'system global') {
+        var t = o.T;
+        if (t['hostname']) d.hostname = stripQuotes(t['hostname']);
+        if (t['alias']) d.alias = stripQuotes(t['alias']);
+        if (t['timezone']) d.timezone = stripQuotes(t['timezone']);
+        if (t['admin-sport']) d.adminSport = stripQuotes(t['admin-sport']);
+        if (t['admin-ssh-port']) d.adminSsh = stripQuotes(t['admin-ssh-port']);
+      }
+      if (o.S === 'system ha') {
+        var mode = stripQuotes(o.T['mode'] || '');
+        if (mode && mode !== 'standalone') {
+          d.ha = mode + (o.T['group-name'] ? ' (' + stripQuotes(o.T['group-name']) + ')' : '');
+        }
+      }
+      if (o.S === 'system dns') {
+        var p = stripQuotes(o.T['primary'] || ''), s = stripQuotes(o.T['secondary'] || '');
+        if (p || s) d.dns = [p, s].filter(Boolean).join(', ');
+      }
+    });
+    d.label = d.hostname || d.model || 'device';
+    return d;
+  }
+
+  // ---------- network model: interfaces / vpn / matrix / services ----------
+
+  // zone membership map: "vdom|interface" -> zone name
+  function zoneMap(parsed) {
+    var z = {};
+    parsed.objects.forEach(function (o) {
+      if (o.S !== 'system zone' || o.Sect) return;
+      splitTokens(o.T['interface'] || '').forEach(function (m) {
+        z[o.V + '|' + m] = o.N;
+      });
+    });
+    return z;
+  }
+
+  // interfaces as a tree: physical/aggregate parents, VLAN/member children
+  function buildInterfaces(parsed) {
+    var zm = zoneMap(parsed);
+    var all = [];
+    parsed.objects.forEach(function (o) {
+      if (o.S !== 'system interface' || o.Sect) return;
+      var t = o.T;
+      var mode = stripQuotes(t['mode'] || '');
+      var addr;
+      if (mode === 'dhcp' || mode === 'pppoe') addr = '(' + mode + ')';
+      else {
+        addr = netCidr(t['ip'] || '');
+        if (addr === '0.0.0.0/0' || addr === '0.0.0.0/32') addr = '';
+      }
+      var vd = stripQuotes(t['vdom'] || '') || o.V;
+      all.push({
+        V: vd, N: o.N, Type: stripQuotes(t['type'] || ''),
+        Addr: addr, Parent: stripQuotes(t['interface'] || ''),
+        Vlan: stripQuotes(t['vlanid'] || ''), Role: stripQuotes(t['role'] || ''),
+        Access: stripQuotes(t['allowaccess'] || ''), Status: stripQuotes(t['status'] || ''),
+        Alias: stripQuotes(t['alias'] || ''), Members: splitTokens(t['member'] || ''),
+        Zone: zm[vd + '|' + o.N] || zm[o.V + '|' + o.N] || '', L: o.L
+      });
+    });
+    // build parent -> children (VLAN via Parent, aggregate via Members)
+    var byName = {};
+    all.forEach(function (i) { byName[i.V + '|' + i.N] = i; });
+    var childOf = {};
+    all.forEach(function (i) {
+      if (i.Parent) {
+        var pk = i.V + '|' + i.Parent;
+        (childOf[pk] || (childOf[pk] = [])).push(i);
+      }
+      i.Members.forEach(function (m) {
+        var mk = i.V + '|' + m;
+        (childOf[i.V + '|' + i.N] || (childOf[i.V + '|' + i.N] = [])).push(
+          byName[mk] || { V: i.V, N: m, Type: '(member)', Addr: '', Parent: i.N,
+                          Vlan:'', Role:'', Access:'', Status:'', Alias:'', Members:[], Zone:'', L:0 });
+      });
+    });
+    // roots = interfaces that are neither a VLAN of, nor a member of, another
+    var isChild = {};
+    all.forEach(function (i) {
+      if (i.Parent) isChild[i.V + '|' + i.N] = true;
+      i.Members.forEach(function (m) { isChild[i.V + '|' + m] = true; });
+    });
+    var roots = all.filter(function (i) { return !isChild[i.V + '|' + i.N]; })
+                   .sort(function (a, b) {
+                     if (a.V !== b.V) return a.V < b.V ? -1 : 1;
+                     return a.N < b.N ? -1 : a.N > b.N ? 1 : 0;
+                   });
+    return { roots: roots, childOf: childOf };
+  }
+
+  // ipsec phase1 tunnels with phase2 selectors underneath
+  function buildVpn(parsed) {
+    var ph1 = [], ph2 = [];
+    parsed.objects.forEach(function (o) {
+      if (o.Sect) return;
+      var t = o.T;
+      if (o.S === 'vpn ipsec phase1-interface') {
+        ph1.push({ V: o.V, N: o.N, Remote: stripQuotes(t['remote-gw'] || ''),
+                   Iface: stripQuotes(t['interface'] || ''),
+                   Ike: stripQuotes(t['ike-version'] || '1'), L: o.L, kids: [] });
+      } else if (o.S === 'vpn ipsec phase2-interface') {
+        ph2.push({ V: o.V, N: o.N, Parent: stripQuotes(t['phase1name'] || ''),
+                   Src: stripQuotes(t['src-subnet'] || ''),
+                   Dst: stripQuotes(t['dst-subnet'] || ''), L: o.L });
+      }
+    });
+    var byName = {};
+    ph1.forEach(function (p) { byName[p.V + '|' + p.N] = p; });
+    ph2.forEach(function (p) {
+      var parent = byName[p.V + '|' + p.Parent];
+      if (parent) parent.kids.push(p);
+    });
+    ph1.sort(function (a, b) {
+      if (a.V !== b.V) return a.V < b.V ? -1 : 1;
+      return a.N < b.N ? -1 : 1;
+    });
+    return ph1;
+  }
+
+  // policy count per srcintf x dstintf
+  function buildMatrix(parsed, vdom) {
+    var src = {}, dst = {}, cell = {};
+    parsed.objects.forEach(function (o) {
+      if (o.Sect) return;
+      if (o.S !== 'firewall policy' && o.S !== 'firewall policy6') return;
+      if (vdom && vdom !== '*' && o.V !== vdom) return;
+      var si = splitTokens(o.T['srcintf'] || '');
+      var di = splitTokens(o.T['dstintf'] || '');
+      si.forEach(function (s) {
+        di.forEach(function (d) {
+          src[s] = true; dst[d] = true;
+          var k = s + '>' + d;
+          cell[k] = (cell[k] || 0) + 1;
+        });
+      });
+    });
+    return { srcs: Object.keys(src).sort(), dsts: Object.keys(dst).sort(), cell: cell };
+  }
+
+  // device services parsed from the config
+  function buildServices(parsed) {
+    var out = [];
+    parsed.objects.forEach(function (o) {
+      var t = o.T;
+      if (o.S === 'system dns' && o.Sect) {
+        var p = stripQuotes(t['primary'] || ''), s = stripQuotes(t['secondary'] || '');
+        if (p || s) out.push({ V: o.V, Kind: 'DNS', Name: 'resolver',
+          Detail: [p, s].filter(Boolean).join(', '), L: o.L });
+      }
+      if (o.S === 'system ntp' && o.Sect) {
+        out.push({ V: o.V, Kind: 'NTP', Name: 'ntp',
+          Detail: stripQuotes(t['ntpsync'] || '') || 'configured', L: o.L });
+      }
+      if (o.S === 'system dhcp server' && !o.Sect) {
+        out.push({ V: o.V, Kind: 'DHCP', Name: o.N,
+          Detail: 'iface ' + stripQuotes(t['interface'] || '') +
+                  '  gw ' + stripQuotes(t['default-gateway'] || ''), L: o.L });
+      }
+      if (o.S === 'system snmp community' && !o.Sect) {
+        out.push({ V: o.V, Kind: 'SNMP', Name: o.N,
+          Detail: 'community ' + stripQuotes(t['name'] || ''), L: o.L });
+      }
+      if (o.S === 'system ha' && o.Sect) {
+        out.push({ V: o.V, Kind: 'HA', Name: 'ha',
+          Detail: 'mode ' + stripQuotes(t['mode'] || '') +
+                  '  group ' + stripQuotes(t['group-name'] || ''), L: o.L });
+      }
+    });
+    out.sort(function (a, b) {
+      if (a.V !== b.V) return a.V < b.V ? -1 : 1;
+      if (a.Kind !== b.Kind) return a.Kind < b.Kind ? -1 : 1;
+      return a.Name < b.Name ? -1 : 1;
+    });
+    return out;
+  }
+
+  // detail view: original config lines around a 1-based line number
+  function getContext(parsed, line, before, after) {
+    if (!line || !parsed.lines) return [];
+    before = before || 3; after = after || 30;
+    var lo = Math.max(0, line - 1 - before);
+    var hi = Math.min(parsed.lines.length, line - 1 + after);
+    var out = [];
+    for (var i = lo; i < hi; i++) {
+      out.push({ n: i + 1, text: parsed.lines[i], hit: (i + 1 === line) });
+      // stop at the next top-level 'end' after the object to keep it tight
+      if (i + 1 > line && /^\s*next\s*$/.test(parsed.lines[i])) { break; }
+    }
+    return out;
+  }
+
+  // ---------- L3 adjacency topology (config-only, no dynamic routing) ----------
+  // Input: [{label, parsed}]. Output: { nodes:[{id,info}], edges:[...], externals:[...] }.
+  // Every edge carries a `confidence` and a `basis` so the drawing never pretends
+  // a guess is a fact. Dynamic routing (OSPF/BGP) and L2 are deliberately out of scope.
+  function ipOnly(cidr) {
+    if (!cidr) return '';
+    var s = cidr.indexOf('/');
+    return s < 0 ? cidr : cidr.substring(0, s);
+  }
+  function prefixOf(cidr) {
+    var s = cidr.indexOf('/');
+    return s < 0 ? 32 : parseInt(cidr.substring(s + 1), 10);
+  }
+
+  // Force-directed layout (Fruchterman-Reingold), pure and deterministic so the
+  // same graph always lays out the same way and can be unit-tested. No framework:
+  // a circle seeds initial positions, then repulsion (all pairs) and attraction
+  // (edges) are integrated with a cooling schedule. Returns { id: {x,y} } in [0,W]x[0,H].
+  function layoutTopology(ids, links, opts) {
+    opts = opts || {};
+    var W = opts.width || 760, H = opts.height || 460;
+    var iters = opts.iterations || 300;
+    var pad = opts.pad || 60;
+    var n = ids.length;
+    if (n === 0) return {};
+    if (n === 1) { var one = {}; one[ids[0]] = { x: W/2, y: H/2 }; return one; }
+
+    var area = (W - 2*pad) * (H - 2*pad);
+    var k = Math.sqrt(area / n);           // ideal edge length
+    var pos = {}, i;
+    // deterministic seed: evenly on a circle, ordered by id
+    var order = ids.slice().sort();
+    order.forEach(function (id, idx) {
+      var ang = (idx / n) * 2 * Math.PI;
+      pos[id] = { x: W/2 + (k*0.5) * Math.cos(ang), y: H/2 + (k*0.5) * Math.sin(ang) };
+    });
+    // adjacency for attraction
+    var adj = links.map(function (l){ return [l.a, l.b]; })
+                   .filter(function (p){ return pos[p[0]] && pos[p[1]] && p[0] !== p[1]; });
+
+    var t = Math.min(W, H) / 10;           // initial temperature
+    var cool = t / (iters + 1);
+
+    for (var step = 0; step < iters; step++) {
+      var disp = {};
+      order.forEach(function (id){ disp[id] = { x:0, y:0 }; });
+
+      // repulsion: every pair pushes apart
+      for (i = 0; i < n; i++) {
+        for (var j = i+1; j < n; j++) {
+          var a = order[i], b = order[j];
+          var dx = pos[a].x - pos[b].x, dy = pos[a].y - pos[b].y;
+          var dist = Math.sqrt(dx*dx + dy*dy) || 0.01;
+          var force = (k*k) / dist;
+          var ux = dx/dist, uy = dy/dist;
+          disp[a].x += ux*force; disp[a].y += uy*force;
+          disp[b].x -= ux*force; disp[b].y -= uy*force;
+        }
+      }
+      // attraction: connected nodes pull together
+      adj.forEach(function (p){
+        var a = p[0], b = p[1];
+        var dx = pos[a].x - pos[b].x, dy = pos[a].y - pos[b].y;
+        var dist = Math.sqrt(dx*dx + dy*dy) || 0.01;
+        var force = (dist*dist) / k;
+        var ux = dx/dist, uy = dy/dist;
+        disp[a].x -= ux*force; disp[a].y -= uy*force;
+        disp[b].x += ux*force; disp[b].y += uy*force;
+      });
+      // integrate, capped by temperature, then clamp to the frame
+      order.forEach(function (id){
+        var d = disp[id];
+        var dl = Math.sqrt(d.x*d.x + d.y*d.y) || 0.01;
+        pos[id].x += (d.x/dl) * Math.min(dl, t);
+        pos[id].y += (d.y/dl) * Math.min(dl, t);
+        pos[id].x = Math.max(pad, Math.min(W - pad, pos[id].x));
+        pos[id].y = Math.max(pad, Math.min(H - pad, pos[id].y));
+      });
+      t = Math.max(t - cool, 0.01);
+    }
+    return pos;
+  }
+
+  function buildTopology(devices, opts) {
+    opts = opts || {};
+    var mode = opts.mode || 'segments';          // 'segments' (default) | 'adjacency'
+    var includeLoopback = !!opts.includeLoopback; // include /32 host nets
+    // 1) collect every device's L3 interfaces (ipv4, static, up) with their network
+    var ifByDev = {};        // label -> [{name, ip, cidr, net, prefix, vdom}]
+    var ipIndex = {};        // exact interface ip -> [rec]  (for gateway hits)
+    var netIndex = {};       // network/prefix -> [rec]      (for shared subnet)
+
+    devices.forEach(function (d) {
+      var list = [];
+      d.parsed.objects.forEach(function (o) {
+        if (o.S !== 'system interface' || o.Sect) return;
+        var t = o.T;
+        var mode = stripQuotes(t['mode'] || '');
+        if (mode === 'dhcp' || mode === 'pppoe') return;      // ip not in the file
+        var cidr = netCidr(t['ip'] || '');
+        if (!cidr || cidr.indexOf('/') < 0) return;
+        if (cidr.indexOf(':') >= 0) return;                    // ipv4 only
+        var ip = ipOnly(cidr);
+        if (ip === '0.0.0.0') return;
+        if (stripQuotes(t['status'] || '') === 'down') return;
+        var net = connectedNet(cidr), pfx = prefixOf(cidr);
+        // VDOM assignment: interface lives under config global with 'set vdom';
+        // fall back to the object's own vdom scope. VDOMs are isolated routing
+        // domains, so the same private subnet in two vdoms is NOT the same segment.
+        var vdom = stripQuotes(t['vdom'] || '') || o.V;
+        var rec = { dev: d.label, name: o.N, ip: ip, cidr: cidr, net: net,
+                    prefix: pfx, vdom: vdom, L: o.L };
+        list.push(rec);
+        (ipIndex[ip] || (ipIndex[ip] = [])).push(rec);
+        var key = net + '/' + pfx;
+        (netIndex[key] || (netIndex[key] = [])).push(rec);
+      });
+      ifByDev[d.label] = list;
+    });
+
+    var edges = [];
+    var seen = {};
+    function addEdge(a, b, type, conf, basis, dir) {
+      // undirected key so shared-subnet pairs are not duplicated
+      var k = [type, [a, b].sort().join('~')].join('|');
+      if (dir) k = type + '|' + a + '>' + b + '|' + basis;
+      if (seen[k]) return;
+      seen[k] = true;
+      edges.push({ a: a, b: b, type: type, confidence: conf, basis: basis, directed: !!dir });
+    }
+
+    // 2) gateway hit: a static route's gateway equals another device's interface ip.
+    //    Blackhole routes have a fake next-hop, so they must NOT create a neighbour
+    //    or a ghost external node (this was a real bug).
+    var externals = {};
+    devices.forEach(function (d) {
+      d.parsed.objects.forEach(function (o) {
+        if ((o.S !== 'router static' && o.S !== 'router static6') || o.Sect) return;
+        if (stripQuotes(o.T['blackhole'] || '') === 'enable') return;   // blackhole: skip
+        var gw = stripQuotes(o.T['gateway'] || '');
+        if (!gw || gw === '0.0.0.0') return;
+        var hits = (ipIndex[gw] || []).filter(function (h){ return h.dev !== d.label; });
+        if (hits.length) {
+          // In segments mode the device↔device link is already shown by the shared
+          // segment node, so we only draw a gateway arrow in adjacency mode.
+          if (mode === 'adjacency') {
+            hits.forEach(function (h) {
+              addEdge(d.label, h.dev, 'gateway', 'high',
+                'static route via ' + gw + ' → ' + h.dev + '/' + h.vdom + ':' + h.name, true);
+            });
+          }
+        } else if (!(ipIndex[gw] || []).length) {
+          var ex = externals[gw] || (externals[gw] = { ip: gw, from: {} });
+          ex.from[d.label] = true;
+        }
+      });
+    });
+
+    // 3) VPN overlay (both modes): phase1 remote-gw hits another device's interface ip.
+    devices.forEach(function (d) {
+      d.parsed.objects.forEach(function (o) {
+        if (o.S !== 'vpn ipsec phase1-interface' || o.Sect) return;
+        var rgw = stripQuotes(o.T['remote-gw'] || '');
+        if (!rgw) return;
+        var hits = (ipIndex[rgw] || []).filter(function (h){ return h.dev !== d.label; });
+        if (hits.length) {
+          hits.forEach(function (h) {
+            addEdge(d.label, h.dev, 'vpn', 'high',
+              'IPsec tunnel "' + o.N + '" remote-gw ' + rgw + ' → ' + h.dev, false);
+          });
+        } else {
+          var ex = externals[rgw] || (externals[rgw] = { ip: rgw, from: {}, vpn: true });
+          ex.vpn = true; ex.from[d.label] = true;
+        }
+      });
+    });
+
+    var deviceNodes = devices.map(function (d){
+      return { id: d.label, kind: 'device', info: deviceInfo(d.parsed) };
+    });
+    var exNodes = Object.keys(externals).map(function (ip) {
+      return { id: 'ext:' + ip, kind: 'external', ip: ip, vpn: !!externals[ip].vpn,
+               from: Object.keys(externals[ip].from) };
+    });
+
+    // --- adjacency mode (legacy): pairwise device↔device shared-subnet edges ---
+    if (mode === 'adjacency') {
+      Object.keys(netIndex).forEach(function (key) {
+        var members = netIndex[key];
+        for (var i = 0; i < members.length; i++) {
+          for (var j = i + 1; j < members.length; j++) {
+            var m = members[i], n = members[j];
+            if (m.dev === n.dev) continue;
+            var pp = m.prefix;
+            var conf = (pp >= 30) ? 'high' : 'medium';
+            var basis = 'shared subnet ' + key +
+              ' (' + m.dev+'/'+m.vdom+':'+m.name+' '+m.ip + ' ↔ ' + n.dev+'/'+n.vdom+':'+n.name+' '+n.ip + ')' +
+              (m.vdom !== n.vdom ? ' — spans VDOMs (' + m.vdom + '/' + n.vdom + '), which are isolated and may not truly connect' : '') +
+              (pp < 30 ? ' — may traverse an L2 switch' : '');
+            addEdge(m.dev, n.dev, 'subnet', conf, basis, false);
+          }
+        }
+      });
+      return { mode: 'adjacency', nodes: deviceNodes, segments: [], externals: exNodes, edges: edges };
+    }
+
+    // --- segments mode (default): every connected network is its OWN node ---
+    // A device links to each network it has an interface on. This shows a single
+    // device's internal segments (connected routes), and renders shared subnets
+    // faithfully as "both devices connect to the same segment" rather than a fake
+    // direct line. /32 host nets (loopbacks) are skipped unless asked.
+    var segNodes = [];
+    var segIndex = {};            // segId -> true (which segments actually exist)
+    var linkedSet = {};           // "dev|segId" -> already directly attached
+    Object.keys(netIndex).forEach(function (key) {
+      var members = netIndex[key];
+      if (members[0].prefix === 32 && !includeLoopback) return;
+      var devSet = {}, vdSet = {};
+      members.forEach(function (r){ devSet[r.dev] = true; vdSet[r.vdom] = true; });
+      var multiVdom = Object.keys(vdSet).length > 1;
+      var segId = 'net:' + key;
+      segIndex[segId] = true;
+      segNodes.push({ id: segId, kind: 'segment', net: key, prefix: members[0].prefix,
+                      deviceCount: Object.keys(devSet).length, multiVdom: multiVdom });
+      members.forEach(function (r) {
+        var basis = r.dev + '/' + r.vdom + ':' + r.name + ' ' + r.cidr +
+          (multiVdom ? ' — segment spans multiple VDOMs; they may be isolated' : '') +
+          (members[0].prefix < 30 && Object.keys(devSet).length > 1 ? ' — may traverse an L2 switch' : '');
+        linkedSet[r.dev + '|' + segId] = true;
+        addEdge(r.dev, segId, 'link', (r.prefix >= 30 ? 'high' : 'medium'), basis, false);
+      });
+    });
+
+    // Gateway next-hops: if a static route's gateway is another device's interface
+    // IP, that interface sits on a known segment. Draw a directed link from the
+    // routing device to THAT segment — unless the device is already attached to it
+    // (then the relationship is already shown, so skip: "本來就有就算了").
+    var gwDrawn = {};
+    devices.forEach(function (d) {
+      d.parsed.objects.forEach(function (o) {
+        if ((o.S !== 'router static' && o.S !== 'router static6') || o.Sect) return;
+        if (stripQuotes(o.T['blackhole'] || '') === 'enable') return;
+        var gw = stripQuotes(o.T['gateway'] || '');
+        if (!gw || gw === '0.0.0.0') return;
+        (ipIndex[gw] || []).forEach(function (h) {
+          if (h.dev === d.label) return;                 // next-hop is our own interface
+          var segId = 'net:' + h.net + '/' + h.prefix;
+          if (!segIndex[segId]) return;                  // segment not drawn (e.g. loopback)
+          if (linkedSet[d.label + '|' + segId]) return;  // already attached — leave it
+          var kk = d.label + '|' + segId;
+          if (gwDrawn[kk]) return;                        // dedupe multiple routes same seg
+          gwDrawn[kk] = true;
+          addEdge(d.label, segId, 'gateway', 'high',
+            'static route via ' + gw + ' → ' + h.dev + '/' + h.vdom + ':' + h.name +
+            ' on ' + h.net + '/' + h.prefix, true);
+        });
+      });
+    });
+
+    return { mode: 'segments', nodes: deviceNodes, segments: segNodes,
+             externals: exNodes, edges: edges };
+  }
+
+  // ---------- CLI builders ----------
+  // cmdb paths for the mandatory refcnt verification step
+  var CMDB = {
+    'firewall address': 'firewall.address.name',
+    'firewall address6': 'firewall.address6.name',
+    'firewall addrgrp': 'firewall.addrgrp.name',
+    'firewall addrgrp6': 'firewall.addrgrp6.name',
+    'firewall service custom': 'firewall.service.custom.name',
+    'firewall service group': 'firewall.service.group.name',
+    'firewall vip': 'firewall.vip.name',
+    'firewall vip6': 'firewall.vip6.name',
+    'firewall vipgrp': 'firewall.vipgrp.name',
+    'firewall ippool': 'firewall.ippool.name',
+    'firewall ippool6': 'firewall.ippool6.name',
+    'firewall schedule recurring': 'firewall.schedule.recurring.name',
+    'firewall schedule onetime': 'firewall.schedule.onetime.name',
+    'firewall schedule group': 'firewall.schedule.group.name'
+  };
+
+  function vdomOpen(zone, vdomMode) {
+    if (!vdomMode) return [];
+    if (zone === 'global') return ['config global'];
+    return ['config vdom', 'edit ' + zone];
+  }
+  function vdomClose(zone, vdomMode) {
+    if (!vdomMode) return [];
+    if (zone === 'global') return ['end'];
+    return ['next', 'end'];
+  }
+
+  // groups sort before members so a member is still free when its turn comes
+  function sectionOrder(sections) {
+    return sections.slice().sort(function (a, b) {
+      var ga = GROUPSET.has(a) ? 0 : 1, gb = GROUPSET.has(b) ? 0 : 1;
+      if (ga !== gb) return ga - gb;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  }
+  function groupBy(recs, keyFn) {
+    var m = {};
+    recs.forEach(function (r) { (m[keyFn(r)] || (m[keyFn(r)] = [])).push(r); });
+    return m;
+  }
+  function sortedKeys(m) { return Object.keys(m).sort(); }
+
+  // reference map for the decide builder ("used by")
+  function buildUsedBy(parsed) {
+    var byV = {};
+    parsed.objects.forEach(function (o) {
+      if (o.Sect) return;
+      (byV[o.V] || (byV[o.V] = {}))[o.N] = o;
+    });
+    var usedBy = {}; // "V|N" -> [referencing descriptions]
+    parsed.objects.forEach(function (o) {
+      var vmap = byV[o.V], gmap = byV['global'];
+      var useGlobal = (o.V !== 'global' && gmap);
+      for (var k in o.T) {
+        if (!o.T.hasOwnProperty(k)) continue;
+        if (SKIPKEYS.has(k)) continue;
+        var toks = splitTokens(o.T[k]);
+        for (var t = 0; t < toks.length; t++) {
+          var hit = (vmap && vmap[toks[t]]) || (useGlobal && gmap[toks[t]]);
+          if (hit && hit !== o) {
+            var id = hit.V + '|' + hit.N;
+            (usedBy[id] || (usedBy[id] = [])).push(o.S + ' "' + o.N + '"');
+          }
+        }
+      }
+    });
+    return usedBy;
+  }
+
+  // RULE: every comment is on its own line; the refcnt step is never removed;
+  // groups delete before members.
+  function buildSafeCli(recs, vdomMode) {
+    var L = [];
+    L.push('# --------------------------------------------------------------');
+    L.push('# Step 1 - back up first');
+    L.push('#   execute backup config tftp before-cleanup.conf <tftp-server>');
+    L.push('#');
+    L.push('# Step 2 - MANDATORY. Do not skip.');
+    L.push('#   The delete block below was derived from this config FILE only.');
+    L.push('#   A file cannot show references held by FortiManager, SDN');
+    L.push('#   connectors, or anything outside it. The DEVICE is the authority.');
+    L.push('#   Run every line below and confirm each returns no reference:');
+    var seen = {};
+    recs.forEach(function (r) {
+      var p = CMDB[r.S];
+      if (!p) return;
+      var k = p + '|' + r.N;
+      if (seen[k]) return;
+      seen[k] = true;
+      L.push('#   diagnose sys cmdb refcnt show ' + p + ' ' + r.N);
+    });
+    L.push('#');
+    L.push('#   A second opinion, recursive over the whole config:');
+    L.push('#     show | grep -f <object-name>');
+    L.push('#');
+    L.push('# Step 3 - only if BOTH checks come back empty, run the block below.');
+    L.push('#   FortiOS refuses to delete an object that is still in use, so a');
+    L.push('#   missed reference gives "Return code -23", not an outage. Treat any');
+    L.push('#   such error as a finding: this tool got it wrong, stop and review.');
+    L.push('# --------------------------------------------------------------');
+    L.push('');
+    var byV = groupBy(recs, function (r) { return r.V; });
+    sortedKeys(byV).forEach(function (v) {
+      vdomOpen(v, vdomMode).forEach(function (l) { L.push(l); });
+      var byS = groupBy(byV[v], function (r) { return r.S; });
+      sectionOrder(Object.keys(byS)).forEach(function (s) {
+        L.push('config ' + s);
+        byS[s].forEach(function (r) {
+          if (r.Val) L.push('    # ' + r.N + ' = ' + r.Val);
+          L.push('    delete "' + r.N + '"');
+        });
+        L.push('end');
+      });
+      vdomClose(v, vdomMode).forEach(function (l) { L.push(l); });
+      L.push('');
+    });
+    return L.join('\n');
+  }
+
+  // RULE: merge deletes are all commented out; refcnt shown per drop object.
+  function buildDecideCli(recs, vdomMode, usedBy) {
+    var L = [];
+    L.push('# --------------------------------------------------------------');
+    L.push('# Merging duplicates is NOT a safe bulk operation.');
+    L.push('# Every policy, group and route pointing at the object you drop must');
+    L.push('# be repointed at the keeper BEFORE the delete will succeed.');
+    L.push('# The deletes below are commented out on purpose.');
+    L.push('# --------------------------------------------------------------');
+    L.push('');
+    recs.forEach(function (r) {
+      L.push('# ===== ' + r.Cat + ' : ' + r.K);
+      L.push('#   keep   : ' + r.Keep);
+      L.push('#   remove : ' + r.Drop);
+      L.push('#');
+      r.DropObjs.forEach(function (o) {
+        var p = CMDB[o.S];
+        if (p) L.push('diagnose sys cmdb refcnt show ' + p + ' ' + o.N);
+        var ub = usedBy && usedBy[o.V + '|' + o.N];
+        if (ub && ub.length) L.push('#   config file shows it used by: ' + ub.join(', '));
+        else L.push('#   config file shows no reference to ' + o.N);
+      });
+      L.push('#');
+      L.push('# once every reference points at the keeper:');
+      var vd = [];
+      r.DropObjs.forEach(function (o) { if (vd.indexOf(o.V) < 0) vd.push(o.V); });
+      vd.sort().forEach(function (v) {
+        vdomOpen(v, vdomMode).forEach(function (l) { L.push('#   ' + l); });
+        var secs = {};
+        r.DropObjs.forEach(function (o) { if (o.V === v) secs[o.S] = true; });
+        Object.keys(secs).sort().forEach(function (s) {
+          L.push('#   config ' + s);
+          r.DropObjs.forEach(function (o) {
+            if (o.V === v && o.S === s) L.push('#       delete "' + o.N + '"');
+          });
+          L.push('#   end');
+        });
+        vdomClose(v, vdomMode).forEach(function (l) { L.push('#   ' + l); });
+      });
+      L.push('');
+    });
+    return L.join('\n');
+  }
+
+  // RULE: comment lines only; site-specific fix lines already start with '#'.
+  function buildFixCli(recs, vdomMode) {
+    var L = [];
+    L.push('# --------------------------------------------------------------');
+    L.push('# Remediation for the selected findings.');
+    L.push('#');
+    L.push('# Back up before changing anything:');
+    L.push('#   execute backup config tftp before-hardening.conf <tftp-server>');
+    L.push('#');
+    L.push('# Commented lines need a site specific value. Review every block: a');
+    L.push('# hardening change can drop the session you are typing it into, so');
+    L.push('# work from the console where possible.');
+    L.push('# --------------------------------------------------------------');
+    L.push('');
+    var byZone = groupBy(recs, function (r) { return r.V; });
+    sortedKeys(byZone).forEach(function (z) {
+      vdomOpen(z, vdomMode).forEach(function (l) { L.push(l); });
+      var byScope = groupBy(byZone[z], function (r) { return r.Scope; });
+      sortedKeys(byScope).forEach(function (sc) {
+        var sectRows = [], byObj = {};
+        byScope[sc].forEach(function (r) {
+          if (r.SectLevel) { sectRows.push(r); }
+          else { (byObj[r.Obj] || (byObj[r.Obj] = [])).push(r); }
+        });
+        L.push('config ' + sc);
+        sectRows.forEach(function (r) {
+          L.push('    # ' + r.Id + '  ' + r.Title);
+          if (r.Detail) L.push('    # observed: ' + r.Detail);
+          (r.Fix || []).forEach(function (f) { L.push('    ' + f); });
+        });
+        Object.keys(byObj).sort().forEach(function (on) {
+          L.push('    edit "' + on + '"');
+          byObj[on].forEach(function (r) {
+            L.push('        # ' + r.Id + '  ' + r.Title);
+            if (r.Detail) L.push('        # observed: ' + r.Detail);
+            (r.Fix || []).forEach(function (f) { L.push('        ' + f); });
+          });
+          L.push('    next');
+        });
+        L.push('end');
+        L.push('');
+      });
+      vdomClose(z, vdomMode).forEach(function (l) { L.push(l); });
+      L.push('');
+    });
+    return L.join('\n');
+  }
+
+  // CSV column spec per tab. When multiDevice is true a leading 'device' column
+  // is prepended so a cross-device export stays traceable to its source.
+  function csvSpec(tab, multiDevice) {
+    var specs = {
+      comp: { headers:['Result','Sev','vdom','ID','Category','Requirement','Object','Observed','Line'],
+              row:function(r){ return [r.Pass?'pass':(r.Skip?'skip':'fail'), r.Sev, r.V, r.Id, r.Cat, r.Title, r.Obj, r.Detail, r.Line]; } },
+      safe: { headers:['vdom','Kind','Name','Value','Why','Line'],
+              row:function(r){ return [r.V, r.Kind, r.N, r.Val, r.Why, r.L]; } },
+      dup:  { headers:['vdom','Category','Value','Count','Keep','Drop','Line'],
+              row:function(r){ return [r.V, r.Cat, r.K, r.Cnt, r.Keep, r.Drop, r.L]; } },
+      routes:{ headers:['vdom','Source','Seq','Destination','Gateway','Device','Dist','Status','Comment','Line'],
+              row:function(r){ return [r.V, r.Src, r.Seq, r.Dst, r.Gw, r.Dev, r.Dist, r.Status, r.Cmt, r.L]; } }
+    };
+    var spec = specs[tab];
+    if (!spec) return null;
+    if (multiDevice) {
+      return { headers: ['device'].concat(spec.headers),
+               row: function (r){ return [r.Dev].concat(spec.row(r)); } };
+    }
+    return spec;
+  }
+
+  var api = {
+    stripQuotes: stripQuotes, splitTokens: splitTokens, maskBits: maskBits,
+    netCidr: netCidr, connectedNet: connectedNet, routeSortKey: routeSortKey,
+    isBuiltin: isBuiltin, parseConfig: parseConfig, invokeCleanup: invokeCleanup,
+    findDuplicates: findDuplicates, buildRoutes: buildRoutes,
+    invokeCompliance: invokeCompliance,
+    buildSafeCli: buildSafeCli, buildDecideCli: buildDecideCli,
+    buildFixCli: buildFixCli, buildUsedBy: buildUsedBy, CMDB: CMDB,
+    buildInterfaces: buildInterfaces, buildVpn: buildVpn,
+    buildMatrix: buildMatrix, buildServices: buildServices,
+    getContext: getContext, zoneMap: zoneMap, deviceInfo: deviceInfo,
+    csvSpec: csvSpec, buildTopology: buildTopology, layoutTopology: layoutTopology
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.FortiCore = api;
+})(typeof window !== 'undefined' ? window : this);
+
+</script><script>
+/* FortiToolkit SPA — UI layer. Depends on FortiCore (window.FortiCore).
+ * No build step, no server. State lives in memory; prefs in localStorage.
+ */
+(function () {
+  'use strict';
+  var Core = window.FortiCore;
+  var DEVICES = [];     // one analysis per loaded file
+  var A = null;         // merged view across all devices (records tagged with .Dev)
+  var curDev = '*';     // selected device label, or '*' for all
+  var curV = '*';       // selected vdom filter, or '*' for all
+  var curTab = 'ov';
+  var uidSeq = 0;       // global unique id so tick selection is stable across views
+  var collapsed = {};   // per-device collapse state, keyed by device label
+  var sel = { comp:new Set(), safe:new Set(), dup:new Set() }; // ticked _id per tab
+
+  // ---------- built-in rule pack (representative, extensible) ----------
+  // ---- site-specific values (EDIT THESE for your environment) ----
+  // The official NCM check uses NCM variables (${firemon}, ${Fortigate_version}...).
+  // Those are not in a config export, so fill them in here.
+  var SITE = {
+    approvedFirmware: [],                 // e.g. ['7.2.5','7.4.4']; empty = skip firmware check
+    syslogServers: [],                    // e.g. ['10.1.1.116','10.1.1.126']; empty = only check syslog is configured
+    hostnamePattern: '.+_.+_.+'           // official: Hostname must be site_role_id (two underscores)
+  };
+
+  // Rule pack derived from 國維處安全堡壘設備一致性檢查表 (Fortigate FortiOS).
+  // The official rules are TEXT regex patterns; per CLAUDE.md 鐵則3 a wildcard can
+  // cross object boundaries and report a false pass, so each is re-expressed as a
+  // STRUCTURAL rule that the engine evaluates one object at a time. The 9 per-account
+  // trusthost rules collapse into one "every admin needs trusthost", and per-server
+  // syslog rules collapse into "syslog is configured" (fill SITE.syslogServers to pin IPs).
+  var PACK = [
+    // ---- Administrative access ----
+    { id:'ACC-01', sev:'high', cat:'Administrative access', section:'system admin',
+      zone:'global', mode:'each', title:'每個本機管理者帳號必須設定 trusthost',
+      conds:[{key:'trusthost1', op:'exists'}],
+      why:'未設 trusthost 的管理者可從任意來源位址登入,等於對外開放管理介面。',
+      fix:['# set trusthost1 <mgmt-subnet> 255.255.255.0'] },
+    { id:'ACC-02', sev:'medium', cat:'Administrative access', section:'system global',
+      zone:'global', mode:'section', title:'管理者閒置 10 分鐘自動登出',
+      conds:[{key:'admintimeout', op:'lte', val:'10'}],
+      why:'閒置過久的管理連線,在工作站未鎖定時仍可被接手操作。',
+      fix:['set admintimeout 10'] },
+
+    // ---- Password policy baseline ----
+    { id:'PWD-01', sev:'high', cat:'Password policy', section:'system password-policy',
+      zone:'global', mode:'section', title:'密碼原則基準(長度/複雜度/到期/不可重用)',
+      conds:[
+        {key:'status', op:'eq', val:'enable'},
+        {key:'minimum-length', op:'gte', val:'10'},
+        {key:'min-lower-case-letter', op:'gte', val:'1'},
+        {key:'min-upper-case-letter', op:'gte', val:'1'},
+        {key:'min-number', op:'gte', val:'1'},
+        {key:'min-non-alphanumeric', op:'gte', val:'1'},
+        {key:'expire-status', op:'eq', val:'enable'},
+        {key:'reuse-password', op:'eq', val:'disable'}
+      ],
+      why:'弱密碼原則讓管理帳號容易被暴力破解或沿用舊密碼。',
+      fix:['set status enable','set minimum-length 10','set min-lower-case-letter 1',
+           'set min-upper-case-letter 1','set min-number 1','set min-non-alphanumeric 1',
+           'set expire-status enable','set reuse-password disable'] },
+
+    // ---- System global baseline ----
+    { id:'GLB-01', sev:'medium', cat:'System hardening', section:'system global',
+      zone:'global', mode:'section', title:'登入前後標語與設定自動備份',
+      conds:[
+        {key:'pre-login-banner', op:'eq', val:'enable', def:'disable'},
+        {key:'post-login-banner', op:'eq', val:'enable', def:'disable'},
+        {key:'revision-backup-on-logout', op:'eq', val:'enable', def:'disable'},
+        {key:'revision-image-auto-backup', op:'eq', val:'enable', def:'disable'}
+      ],
+      why:'標語提供法律告知;登出/升級自動備份確保設定可回溯。',
+      fix:['set pre-login-banner enable','set post-login-banner enable',
+           'set revision-backup-on-logout enable','set revision-image-auto-backup enable'] },
+    { id:'GLB-02', sev:'low', cat:'System hardening', section:'system global',
+      zone:'global', mode:'section', title:'時區設定為台北',
+      conds:[{key:'timezone', op:'in', val:['59','Asia/Taipei']}],
+      why:'時區不一致會讓各設備日誌時間對不上,影響跨設備事件關聯。',
+      fix:['set timezone 59'] },
+    { id:'SYS-01', sev:'low', cat:'System hardening', section:'system global',
+      zone:'global', mode:'section', title:'Hostname 命名格式(站點_角色_序號)',
+      conds:[{key:'hostname', op:'match', val:SITE.hostnamePattern}],
+      why:'命名不符規範會讓資產清點與自動化選取失準。',
+      fix:['# set hostname <site>_<role>_<id>'] },
+
+    // ---- Management-plane exposure (per interface) ----
+    { id:'IF-01', sev:'high', cat:'System hardening', section:'system interface',
+      zone:'any', mode:'each', title:'介面不得開放 HTTP 管理',
+      conds:[{key:'allowaccess', op:'nothas', val:'http', def:''}],
+      why:'HTTP 明文管理會在網路上洩漏管理憑證,應只留 HTTPS。',
+      fix:['# set allowaccess ping https ssh'] },
+    { id:'IF-02', sev:'medium', cat:'System hardening', section:'system interface',
+      zone:'any', mode:'each', title:'介面不得開放 Telnet 管理',
+      conds:[{key:'allowaccess', op:'nothas', val:'telnet', def:''}],
+      why:'Telnet 為明文協定,應以 SSH 取代。',
+      fix:['# set allowaccess ping https ssh'] },
+    { id:'IF-03', sev:'low', cat:'System hardening', section:'system interface',
+      zone:'any', mode:'each', title:'停用 ICMP redirect(收送)',
+      conds:[
+        {key:'icmp-send-redirect', op:'eq', val:'disable', def:'enable'},
+        {key:'icmp-accept-redirect', op:'eq', val:'disable', def:'enable'}
+      ],
+      why:'ICMP redirect 可被用來竄改路由路徑,應關閉。',
+      fix:['set icmp-send-redirect disable','set icmp-accept-redirect disable'] },
+
+    // ---- SNMP ----
+    { id:'SNMP-01', sev:'high', cat:'SNMP', section:'system snmp community/hosts',
+      zone:'any', mode:'each', title:'SNMP host ACL 必須限制為 /32',
+      conds:[{key:'ip', op:'match', val:'255\\.255\\.255\\.255\\s*$'}],
+      why:'SNMP 未限制來源等於對外開放查詢設備資訊,host ACL 應為單一主機 /32。',
+      fix:['# set ip <mgmt-host> 255.255.255.255'] },
+
+    // ---- VPN ----
+    { id:'VPN-01', sev:'high', cat:'VPN', section:'vpn ssl settings',
+      zone:'vdom', mode:'section', title:'SSL VPN 應停用',
+      conds:[{key:'status', op:'ne', val:'enable', def:'disable'}],
+      why:'未使用的 SSL VPN 若處於啟用狀態,是不必要的對外攻擊面。',
+      fix:['set status disable'] },
+
+    // ---- UTM / inspection ----
+    { id:'UTM-01', sev:'medium', cat:'System hardening', section:'firewall policy',
+      zone:'vdom', mode:'each', title:'政策不應啟用 UTM/Deep inspection',
+      conds:[{key:'utm-status', op:'ne', val:'enable', def:'disable'}],
+      why:'依國維處基準,深度檢測由其他機制負責,防火牆政策不啟用 UTM。',
+      fix:['set utm-status disable'] },
+
+    // ---- Logging ----
+    { id:'LOG-01', sev:'medium', cat:'Logging', section:'log syslogd setting',
+      zone:'vdom', mode:'section', title:'必須設定 syslog 伺服器',
+      conds: SITE.syslogServers.length
+        ? [{key:'status', op:'eq', val:'enable', def:'disable'},
+           {key:'server', op:'in', val:SITE.syslogServers}]
+        : [{key:'status', op:'eq', val:'enable', def:'disable'},
+           {key:'server', op:'exists'}],
+      why:'未送出 syslog 就沒有集中稽核軌跡,事件發生後無從追查。',
+      fix:['set status enable','# set server <syslog-ip>'] },
+
+    // ---- Device-level (whole config) ----
+    { id:'DEV-01', sev:'low', cat:'System hardening', mode:'device',
+      title:'應啟用 VDOM', 
+      check:function (p){ return { pass: !!p.vdomMode,
+        detail: p.vdomMode ? '' : 'VDOM 未啟用(single VDOM)' }; },
+      why:'多 VDOM 可將管理與流量分域,降低單一失誤的影響範圍。',
+      fix:['# config system global','#   set vdom-mode multi-vdom','# end'] },
+    { id:'DEV-02', sev:'medium', cat:'System hardening', mode:'device',
+      title:'應啟用高可用性(HA),不得為 standalone',
+      check:function (p){
+        var ha = Core.deviceInfo(p).ha;
+        return { pass: !!ha, detail: ha ? '' : 'HA mode = standalone(無備援)' };
+      },
+      why:'standalone 無備援,設備故障即造成服務中斷。',
+      fix:['# config system ha','#   set mode a-p','#   set group-name <cluster>','# end'] },
+    { id:'DEV-03', sev:'low', cat:'System hardening', mode:'device',
+      title:'韌體應為核可版本',
+      check:function (p){
+        if (!SITE.approvedFirmware.length) return { pass:true }; // not configured -> skip
+        var fw = Core.deviceInfo(p).firmware;
+        var okv = SITE.approvedFirmware.some(function (v){ return fw.indexOf(v) === 0; });
+        return { pass: okv, detail: okv ? '' : 'firmware ' + (fw||'unknown') +
+          ' 不在核可清單 ' + SITE.approvedFirmware.join('/') };
+      },
+      why:'非核可韌體可能含已知漏洞或未經驗證的行為。',
+      fix:['# 依維運程序升級至核可版本'] }
+  ];
+
+  // ---------- analysis ----------
+  // ensure a unique device label even if two files share a hostname
+  function uniqueLabel(base) {
+    var label = base, n = 2;
+    var taken = {}; DEVICES.forEach(function (d){ taken[d.label] = true; });
+    while (taken[label]) { label = base + ' (' + n + ')'; n++; }
+    return label;
+  }
+
+  // parse + analyse one file and APPEND it as a device (does not replace others)
+  function addDevice(text, fileName, fileObj) {
+    var t0 = performance.now();
+    var parsed = Core.parseConfig(text);
+    var comp = Core.invokeCompliance(parsed, PACK);
+    var clean = Core.invokeCleanup(parsed);
+    var cross = document.getElementById('chkCross').checked;
+    var dups = Core.findDuplicates(parsed, cross);
+    var routes = Core.buildRoutes(parsed);
+    var t1 = performance.now();
+
+    var info = Core.deviceInfo(parsed);
+    var label = uniqueLabel(info.label || fileName || ('device ' + (DEVICES.length + 1)));
+
+    // tag every record with its device label + a globally-unique id
+    comp.forEach(function (r){ r.Dev = label; r._id = uidSeq++; });
+    clean.safe.forEach(function (r){ r.Dev = label; r._id = uidSeq++; });
+    clean.held.forEach(function (r){ r.Dev = label; });
+    dups.forEach(function (r){ r.Dev = label; r._id = uidSeq++; });
+    routes.forEach(function (r){ r.Dev = label; });
+
+    DEVICES.push({ label:label, info:info, parsed:parsed, comp:comp, clean:clean,
+                   dups:dups, routes:routes, fileName:fileName, ms:(t1 - t0),
+                   usedBy:null, _text:text });
+    collapsed[label] = false;
+    // focus the newly added device
+    curDev = label; curV = '*';
+    rebuildView();
+    buildTree();
+    renderAll();
+    var warn = parsed.truncated ? '  ⚠ file looks truncated (a config block never closed)' : '';
+    setStatus('Loaded ' + fileName + ' as "' + label + '" — ' + parsed.objects.length +
+              ' objects in ' + (t1 - t0).toFixed(0) + ' ms · ' + DEVICES.length + ' device(s) total' + warn);
+    show('workspace');
+  }
+
+  // merge all devices into one view; records keep their .Dev tag and unique _id
+  function rebuildView() {
+    var comp = [], safe = [], held = [], dups = [], routes = [];
+    var anyVdom = false, objTotal = 0;
+    DEVICES.forEach(function (d){
+      comp = comp.concat(d.comp);
+      safe = safe.concat(d.clean.safe);
+      held = held.concat(d.clean.held);
+      dups = dups.concat(d.dups);
+      routes = routes.concat(d.routes);
+      anyVdom = anyVdom || d.parsed.vdomMode;
+      objTotal += d.parsed.objects.length;
+    });
+    A = { comp:comp, clean:{ safe:safe, held:held }, dups:dups, routes:routes,
+          vdomMode:anyVdom, objTotal:objTotal };
+    document.getElementById('chkCross').style.display = anyVdom ? '' : 'none';
+  }
+
+  // the parsed config for the network (topology) tabs: needs a single device.
+  function curParsed() {
+    if (curDev !== '*') {
+      var d = DEVICES.filter(function (x){ return x.label === curDev; })[0];
+      return d ? d.parsed : null;
+    }
+    return DEVICES.length === 1 ? DEVICES[0].parsed : null; // '*' with one device is unambiguous
+  }
+  function curDevice() {
+    if (curDev !== '*') return DEVICES.filter(function (x){ return x.label === curDev; })[0] || null;
+    return DEVICES.length === 1 ? DEVICES[0] : null;
+  }
+
+  // ---------- device / vdom tree ----------
+  function buildTree() {
+    var el = document.getElementById('tree');
+    el.innerHTML = '';
+
+    // top: All devices (only meaningful when more than one is loaded)
+    if (DEVICES.length > 1) {
+      el.appendChild(mkNode('All devices', '*', '*', A.objTotal, 0));
+    }
+
+    DEVICES.forEach(function (d) {
+      var vd = {};
+      d.parsed.objects.forEach(function (o){ vd[o.V] = (vd[o.V] || 0) + 1; });
+      var names = Object.keys(vd).sort();
+      var isCol = collapsed[d.label];
+
+      var hdr = document.createElement('div');
+      hdr.className = 'devhdr' + (curDev === d.label && curV === '*' ? ' sel' : '');
+      var sub = d.info.model ? (d.info.model + (d.info.firmware ? ' · v' + d.info.firmware : '')) : '';
+      hdr.innerHTML = '<span class="caret">' + (isCol ? '▸' : '▾') + '</span>' +
+        '<span class="devname" title="' + esc(d.label) + '">' + esc(d.label) + '</span>' +
+        '<span class="devsub">' + esc(sub) + '</span>';
+      // caret toggles collapse; the name selects the whole device
+      hdr.querySelector('.caret').onclick = function (e) {
+        e.stopPropagation(); collapsed[d.label] = !isCol; buildTree();
+      };
+      hdr.onclick = function () { curDev = d.label; curV = '*'; buildTree(); renderAll(); };
+      el.appendChild(hdr);
+
+      if (!isCol) {
+        var kids = document.createElement('div');
+        kids.className = 'devkids';
+        kids.appendChild(mkNode('All vdoms', d.label, '*', d.parsed.objects.length, 1));
+        names.forEach(function (n){ kids.appendChild(mkNode(n, d.label, n, vd[n], 2)); });
+        el.appendChild(kids);
+      }
+    });
+
+    document.getElementById('treeLbl').textContent =
+      'Devices — ' + DEVICES.length;
+  }
+  // val carries {dev, vdom}; a node is selected when both match the current filter
+  function mkNode(label, dev, vdom, count, depth) {
+    var d = document.createElement('div');
+    var isSel = (curDev === dev && curV === vdom);
+    d.className = 'node' + (isSel ? ' sel' : '');
+    d.style.paddingLeft = (depth === 0 ? 12 : depth === 1 ? 22 : 34) + 'px';
+    d.innerHTML = '<span class="nlabel">' + esc(label) + '</span>' +
+                  '<span class="ncount">' + count + '</span>';
+    d.onclick = function () { curDev = dev; curV = vdom; buildTree(); renderAll(); };
+    return d;
+  }
+
+  // ---------- rendering ----------
+  var TABS = ['ov','comp','safe','dup','routes','iface','vpn','matrix','svc','topo'];
+  function renderAll() {
+    renderOverview(); renderComp(); renderSafe(); renderDup(); renderRoutes();
+    renderIfaces(); renderVpn(); renderMatrix(); renderSvc(); renderTopo();
+    applyIndet();
+  }
+  // a record shows when its device AND its vdom match the current filter.
+  // Used for the MERGED data tabs (compliance/safe/dup/routes) whose records
+  // are tagged with .Dev during addDevice().
+  function matchRow(r) {
+    if (curDev !== '*' && r.Dev !== curDev) return false;
+    if (curV !== '*' && r.V !== curV) return false;
+    return true;
+  }
+  // Vdom-only filter for the NETWORK topology tabs (interfaces/vpn/services).
+  // Their records come fresh from Core.build*(curParsed()) and are already scoped
+  // to one device, so they carry no .Dev tag — filtering by device would wrongly
+  // drop everything (this was the "Interfaces tab went blank" regression).
+  function matchVdom(r) {
+    return curV === '*' || r.V === curV;
+  }
+
+  function renderOverview() {
+    if (!A) return;
+    var c = A.comp.filter(function (r){ return matchRow(r); });
+    var fails = c.filter(function (r){ return !r.Pass && !r.Skip; });
+    var bySev = {};
+    fails.forEach(function (r){ bySev[r.Sev] = (bySev[r.Sev]||0)+1; });
+    var safe = A.clean.safe.filter(function (r){ return matchRow(r); });
+    var held = A.clean.held.filter(function (r){ return matchRow(r); });
+    var dups = A.dups.filter(function (r){ return matchRow(r); });
+    var routes = A.routes.filter(function (r){ return matchRow(r); });
+    var conn = routes.filter(function (r){ return r.Src==='connected'; }).length;
+    var h = '';
+    h += card('Compliance findings', fails.length,
+      sevLine(bySev));
+    h += card('Safe to remove', safe.length, held.length + ' built-in held back');
+    h += card('Duplicate groups', dups.length, '');
+    h += card('Routes', routes.length, conn + ' connected, ' + (routes.length-conn) + ' static');
+    document.getElementById('ov').innerHTML =
+      devicePanel() +
+      '<div class="cards">' + h + '</div>';
+  }
+  // device panel: one card per device when viewing all, or the full detail
+  // grid when a single device is in focus.
+  function devicePanel() {
+    var dvc = curDevice();
+    if (!dvc) {
+      // merged view across multiple devices: a compact card per device
+      var cards = DEVICES.map(function (D){
+        var fails = D.comp.filter(function (r){ return !r.Pass && !r.Skip; }).length;
+        var i = D.info;
+        return '<div class="cardbox" style="cursor:pointer" data-dev="' + esc(D.label) + '">' +
+          '<div class="cardt" style="font-weight:700;font-size:14px">' + esc(D.label) + '</div>' +
+          '<div class="cards2">' + esc(i.model || '') + (i.firmware ? ' · v' + esc(i.firmware) : '') +
+          ' · ' + (i.vdomMode) + '</div>' +
+          '<div class="cards2">' + fails + ' finding(s) · ' + D.parsed.objects.length + ' objects</div>' +
+          '</div>';
+      }).join('');
+      return '<div class="devpanel"><div class="devpanel-h">' + DEVICES.length +
+        ' devices</div><div class="cards" id="devcards">' + cards + '</div></div>';
+    }
+    var d = dvc.info;
+    var vd = {}; dvc.parsed.objects.forEach(function (o){ vd[o.V] = (vd[o.V]||0)+1; });
+    var vdomNames = Object.keys(vd).sort();
+    var rows = [
+      ['Hostname', d.hostname || '—'],
+      ['Model', d.model || '—'],
+      ['Firmware', d.firmware ? ('v' + d.firmware + (d.build ? ' (build ' + d.build + ')' : '')) : '—'],
+      ['Operation mode', d.opmode || '—'],
+      ['VDOM mode', d.vdomMode + (dvc.parsed.vdomMode ? ' · ' + vdomNames.length + ' vdom(s)' : '')],
+      ['HA', d.ha || 'standalone'],
+      ['Timezone', d.timezone || '—'],
+      ['Admin HTTPS / SSH port', (d.adminSport || '443') + ' / ' + (d.adminSsh || '22')],
+      ['DNS', d.dns || '—']
+    ];
+    if (d.alias) rows.splice(1, 0, ['Alias', d.alias]);
+    var items = rows.map(function (r){
+      return '<div class="di"><span class="dk">' + esc(r[0]) + '</span>' +
+             '<span class="dv">' + esc(r[1]) + '</span></div>';
+    }).join('');
+    return '<div class="devpanel">' +
+      '<div class="devpanel-h">' + esc(d.label) +
+      (d.model ? ' <span class="devpanel-sub">' + esc(d.model) +
+        (d.firmware ? ' · v' + esc(d.firmware) : '') + '</span>' : '') + '</div>' +
+      '<div class="digrid">' + items + '</div></div>';
+  }
+  function card(t, n, sub) {
+    return '<div class="cardbox"><div class="cardn">'+n+'</div><div class="cardt">'+t+
+           '</div><div class="cards2">'+(sub||'')+'</div></div>';
+  }
+  function sevLine(bySev) {
+    var order = ['critical','high','medium','low','info'], out = [];
+    order.forEach(function (s){ if (bySev[s]) out.push(bySev[s]+' '+s); });
+    return out.join(' · ') || 'all clear';
+  }
+
+  var SEV = { critical:'#c62828', high:'#e65100', medium:'#f9a825', low:'#1565c0', info:'#666' };
+  // classification strip: one chip per type, with a count and a tick-all box.
+  // typeOf(r) returns the grouping key; selKey is the sel bucket ('comp'/'safe'/'dup').
+  function typeBar(selKey, rows, typeOf, colorFn) {
+    var groups = {};
+    rows.forEach(function (r){
+      var t = typeOf(r);
+      (groups[t] || (groups[t] = [])).push(r);
+    });
+    var keys = Object.keys(groups).sort(function (a,b){
+      return groups[b].length - groups[a].length || (a<b?-1:1);
+    });
+    if (!keys.length) return '';
+    var chips = keys.map(function (t){
+      var ids = groups[t];
+      var allTicked = ids.every(function (r){ return sel[selKey].has(r._id); });
+      var some = !allTicked && ids.some(function (r){ return sel[selKey].has(r._id); });
+      var col = colorFn ? colorFn(t) : '#5a6070';
+      return '<label class="chip"' + (allTicked?' data-on="1"':'') + '>' +
+        '<input type="checkbox" class="typetick" data-sel="'+selKey+'" data-type="'+esc(t)+'"' +
+        (allTicked?' checked':'') + (some?' data-some="1"':'') + '>' +
+        '<span class="dot" style="background:'+col+'"></span>' +
+        esc(t) + ' <b>'+ids.length+'</b></label>';
+    }).join('');
+    return '<div class="typebar">' + chips + '</div>';
+  }
+  function tickType(selKey, type, on, typeOf, rows) {
+    rows.forEach(function (r){
+      if (typeOf(r) === type) { on ? sel[selKey].add(r._id) : sel[selKey].delete(r._id); }
+    });
+  }
+  // remember the (typeOf, rows) per tab so a type checkbox knows what to toggle
+  var typeCtx = {};
+  function applyIndet() {
+    var boxes = document.querySelectorAll('input.typetick[data-some="1"]');
+    for (var i = 0; i < boxes.length; i++) boxes[i].indeterminate = true;
+  }
+
+  function renderComp() {
+    var showPass = document.getElementById('chkPass').checked;
+    var rows = A.comp.filter(function (r){
+      if (!matchRow(r)) return false;
+      if (r.Skip) return showPass;
+      if (r.Pass && !showPass) return false;
+      return true;
+    });
+    rows.sort(function (a,b){
+      var rank = {critical:0,high:1,medium:2,low:3,info:4};
+      return (rank[a.Sev]-rank[b.Sev]) || (a.Id<b.Id?-1:1);
+    });
+    var head = ['fix','','Sev','vdom','ID','Category','Requirement','Object','Observed','Line'];
+    var body = rows.map(function (r){
+      var st = r.Skip ? '<span class="pill" style="background:#eee;color:#777">skip</span>'
+             : r.Pass ? '<span class="pill" style="background:#e8f5e9;color:#2e7d32">pass</span>'
+             : '<span class="pill" style="background:#ffebee;color:#c62828">fail</span>';
+      var tick = (!r.Pass && !r.Skip)
+        ? '<input type="checkbox" class="tick" data-sel="comp" data-id="'+r._id+'"'+(sel.comp.has(r._id)?' checked':'')+'>'
+        : '';
+      return [tick, st,
+        '<span style="color:'+(SEV[r.Sev]||'#666')+';font-weight:600">'+r.Sev+'</span>',
+        esc(r.V), r.Id, esc(r.Cat), esc(r.Title), esc(r.Obj),
+        esc(r.Detail), r.Line||''];
+    });
+    var fails = rows.filter(function(r){return !r.Pass&&!r.Skip;});
+    var tOf = function (r){ return r.Sev; };
+    typeCtx.comp = { typeOf: tOf, rows: fails };
+    var bar = typeBar('comp', fails, tOf, function (s){ return SEV[s]||'#666'; });
+    document.getElementById('comp').innerHTML = bar + table(head, body,
+      'Rules run on the parsed object tree, so a setting on one entry can never satisfy a rule about another.',
+      metaOf(rows, 'Line'));
+    document.getElementById('tabComp').textContent = 'Compliance (' + fails.length + ')';
+  }
+
+  function renderSafe() {
+    var rows = A.clean.safe.filter(function (r){ return matchRow(r); });
+    var head = ['del','vdom','Kind','Name','Value','Why','Line'];
+    var body = rows.map(function (r){
+      var tick = '<input type="checkbox" class="tick" data-sel="safe" data-id="'+r._id+'"'+(sel.safe.has(r._id)?' checked':'')+'>';
+      return [tick, esc(r.V), esc(r.Kind), esc(r.N), esc(r.Val), esc(r.Why), r.L]; });
+    var held = A.clean.held.filter(function (r){ return matchRow(r); });
+    var note = 'Nothing in the config points at these. Verify with refcnt on the device before deleting.' +
+      (held.length ? ' — ' + held.length + ' built-in object(s) held back and NOT listed.' : '');
+    var tOf = function (r){ return r.Type; };  // short section type
+    typeCtx.safe = { typeOf: tOf, rows: rows };
+    var bar = typeBar('safe', rows, tOf, null);
+    document.getElementById('safe').innerHTML = bar + table(head, body, note, metaOf(rows, 'L'));
+    document.getElementById('tabSafe').textContent = 'Safe to remove (' + rows.length + ')';
+  }
+
+  function renderDup() {
+    var rows = A.dups.filter(function (r){ return matchRow(r); });
+    var head = ['plan','vdom','Category','Same value','Count','Suggested keep','Would drop','Line'];
+    var body = rows.map(function (r){
+      var tick = '<input type="checkbox" class="tick" data-sel="dup" data-id="'+r._id+'"'+(sel.dup.has(r._id)?' checked':'')+'>';
+      return [tick, esc(r.V), esc(r.Cat), esc(r.K), r.Cnt, esc(r.Keep), esc(r.Drop), r.L]; });
+    var tOf = function (r){ return r.Cat; };
+    typeCtx.dup = { typeOf: tOf, rows: rows };
+    var bar = typeBar('dup', rows, tOf, null);
+    document.getElementById('dup').innerHTML = bar + table(head, body,
+      'Same value, different names. Pick a keeper, repoint every reference, then delete. Deletes must be generated commented out.',
+      metaOf(rows, 'L'));
+    document.getElementById('tabDup').textContent = 'Duplicates (' + rows.length + ')';
+  }
+
+  function renderRoutes() {
+    var rows = A.routes.filter(function (r){ return matchRow(r); });
+    var head = ['vdom','Source','Seq','Destination','Gateway','Device','Dist','Status','Comment','Line'];
+    var body = rows.map(function (r){
+      var src = r.Src==='connected'
+        ? '<span class="pill" style="background:#e3f2fd;color:#1565c0">connected</span>'
+        : '<span class="pill" style="background:#f3e5f5;color:#6a1b9a">static</span>';
+      return [esc(r.V), src, r.Seq, esc(r.Dst), esc(r.Gw), esc(r.Dev),
+              r.Dist, esc(r.Status), esc(r.Cmt), r.L];
+    });
+    document.getElementById('routes').innerHTML = table(head, body,
+      'Static plus connected routes. Connected routes are derived from interface IPs (line points to the interface); DHCP/PPPoE, IPv6 and down interfaces are omitted.',
+      metaOf(rows, 'L'));
+    document.getElementById('tabRoutes').textContent = 'Routing (' + rows.length + ')';
+  }
+
+  // ---------- interfaces tree ----------
+  function renderIfaces() {
+    var P = curParsed();
+    if (!P) return needDevice('iface', 'Interfaces');
+    var ifs = Core.buildInterfaces(P);
+    var roots = ifs.roots.filter(function (r){ return matchVdom(r); });
+    var h = '<p class="hint">Physical ports expand into VLAN sub-interfaces; aggregates expand into members. Zone membership in brackets. Double-click a line to see the config.</p>';
+    if (!roots.length) { document.getElementById('iface').innerHTML = h + '<p class="empty">No interfaces for this vdom.</p>'; return; }
+    h += '<div class="tree2">';
+    roots.forEach(function (r){ h += ifaceNode(r, ifs.childOf, 0); });
+    h += '</div>';
+    document.getElementById('iface').innerHTML = h;
+    document.getElementById('tabIface').textContent = 'Interfaces (' + roots.length + ')';
+  }
+  function ifaceNode(i, childOf, depth) {
+    var kids = childOf[i.V + '|' + i.N] || [];
+    var pad = 'padding-left:' + (10 + depth * 22) + 'px';
+    var extra = [];
+    if (i.Vlan) extra.push('vlan ' + i.Vlan);
+    if (i.Zone) extra.push('[zone ' + i.Zone + ']');
+    if (i.Role) extra.push(i.Role);
+    if (i.Status === 'down') extra.push('<span style="color:#c62828">down</span>');
+    if (i.Access) extra.push('access: ' + i.Access);
+    var addr = i.Addr || '-';
+    var line = '<div class="tn" style="' + pad + '" data-line="' + i.L + '">' +
+      '<b>' + esc(i.N) + '</b>  <span class="mono">' + esc(addr) + '</span>' +
+      '  <span class="dim">' + esc(i.Type || '') + '</span>' +
+      (extra.length ? '  <span class="dim">' + extra.join('  ') + '</span>' : '') + '</div>';
+    kids.forEach(function (k){ line += ifaceNode(k, childOf, depth + 1); });
+    return line;
+  }
+
+  // ---------- vpn tree ----------
+  function renderVpn() {
+    var P = curParsed();
+    if (!P) return needDevice('vpn', 'VPN');
+    var ph1 = Core.buildVpn(P).filter(function (r){ return matchVdom(r); });
+    var h = '<p class="hint">IPsec phase 1 tunnels with their phase 2 selectors underneath. Double-click to see the config.</p>';
+    if (!ph1.length) { document.getElementById('vpn').innerHTML = h + '<p class="empty">No IPsec tunnels for this vdom.</p>'; return; }
+    h += '<div class="tree2">';
+    ph1.forEach(function (p){
+      h += '<div class="tn" style="padding-left:10px" data-line="' + p.L + '">' +
+        '<b>' + esc(p.N) + '</b>  <span class="dim">remote ' + esc(p.Remote || '-') +
+        '  · iface ' + esc(p.Iface || '-') + '  · IKEv' + esc(p.Ike) + '</span></div>';
+      p.kids.forEach(function (k){
+        h += '<div class="tn" style="padding-left:32px" data-line="' + k.L + '">' +
+          esc(k.N) + '  <span class="mono">' + esc(Core.netCidr(k.Src) || k.Src || '') +
+          ' → ' + esc(Core.netCidr(k.Dst) || k.Dst || 'any') + '</span></div>';
+      });
+    });
+    h += '</div>';
+    document.getElementById('vpn').innerHTML = h;
+    document.getElementById('tabVpn').textContent = 'VPN (' + ph1.length + ')';
+  }
+
+  // ---------- traffic matrix ----------
+  function renderMatrix() {
+    var P = curParsed();
+    if (!P) return needDevice('matrix', 'Traffic design');
+    var mx = Core.buildMatrix(P, curV);
+    var h = '<p class="hint">Policy count per source→destination interface pair. Blank means no policy allows that direction.</p>';
+    if (!mx.srcs.length) { document.getElementById('matrix').innerHTML = h + '<p class="empty">No policies for this vdom.</p>'; return; }
+    h += '<table class="mx"><thead><tr><th>src \\ dst</th>';
+    mx.dsts.forEach(function (d){ h += '<th>' + esc(d) + '</th>'; });
+    h += '</tr></thead><tbody>';
+    mx.srcs.forEach(function (s){
+      h += '<tr><th>' + esc(s) + '</th>';
+      mx.dsts.forEach(function (d){
+        var n = mx.cell[s + '>' + d] || 0;
+        var bg = n >= 100 ? '#c4d8f4' : n >= 25 ? '#dbe8f9' : n >= 5 ? '#ebf2fc' : n > 0 ? '#f7fafe' : '';
+        h += '<td style="text-align:center' + (bg ? ';background:' + bg : '') + '">' + (n || '') + '</td>';
+      });
+      h += '</tr>';
+    });
+    h += '</tbody></table>';
+    document.getElementById('matrix').innerHTML = h;
+    document.getElementById('tabMatrix').textContent = 'Traffic design';
+  }
+
+  // ---------- services ----------
+  function renderSvc() {
+    var P = curParsed();
+    if (!P) return needDevice('svc', 'Services');
+    var rows = Core.buildServices(P).filter(function (r){ return matchVdom(r); });
+    var head = ['vdom','Service','Name','Detail','Line'];
+    var body = rows.map(function (r){ return [esc(r.V), esc(r.Kind), esc(r.Name), esc(r.Detail), r.L]; });
+    document.getElementById('svc').innerHTML = table(head, body, 'Device services parsed from the config.');
+    document.getElementById('tabSvc').textContent = 'Services (' + rows.length + ')';
+  }
+
+  // ---------- topology (L3 adjacency, config-only) ----------
+  var topoState = { vbw: 0, vbh: 0 };        // native graph size for fit/export
+  var topoView  = { scale: 1, tx: 0, ty: 0 };// current pan/zoom of #topoview
+  var topoMode  = 'segments';                // 'segments' | 'adjacency'
+  var EDGE_STYLE = {
+    link:    { color:'#2e7d32', label:'device ↔ network' },
+    subnet:  { color:'#2e7d32', label:'shared subnet' },
+    gateway: { color:'#1565c0', label:'static gateway' },
+    vpn:     { color:'#8e24aa', label:'IPsec tunnel' }
+  };
+  function renderTopo() {
+    var el = document.getElementById('topo');
+    if (DEVICES.length < 1) { el.innerHTML = '<p class="empty">Load one or more configs.</p>'; return; }
+    var topo = Core.buildTopology(DEVICES.map(function (d){ return { label:d.label, parsed:d.parsed }; }),
+                                  { mode: topoMode });
+    var segCount = (topo.segments || []).length;
+    document.getElementById('tabTopo').textContent = 'Topology (' +
+      (topoMode === 'segments' ? segCount + ' nets' : topo.edges.length + ' links') + ')';
+
+    var note = topoMode === 'segments'
+      ? 'Each box is a device, each rounded pill is a connected network (a segment). ' +
+        'A device links to every network it has an interface on — so a single device shows its ' +
+        'internal segments, and a shared subnet shows both devices joining the same pill. ' +
+        'Dynamic routing and L2 switching are not shown. Click a link for the evidence.'
+      : 'Device-to-device L3 adjacency from shared subnets, static-route gateways and IPsec peers. ' +
+        'Solid = high confidence, dashed = may traverse an L2 switch. Click a link for the evidence.';
+    if (DEVICES.length < 1 || (topo.nodes.length === 0)) {
+      el.innerHTML = '<p class="hint">' + esc(note) + '</p><p class="empty">Load a config.</p>';
+      return;
+    }
+
+    // Layered layout via dagre (bundled). Nodes are placed in ranks so they
+    // never overlap and edges are routed around them — that is the "readable,
+    // no pile-up" win over the hand-rolled force layout, which is kept as a
+    // graceful fallback when dagre is absent (e.g. a stripped build).
+    var DEV_W = 130, DEV_H = 46, EXT_W = 92, EXT_H = 34, SEG_W = 116, SEG_H = 34;
+    var edgeMeta = [];   // parallel list to recover style/basis per drawn edge
+
+    var layout;
+    if (typeof window !== 'undefined' && window.dagre) {
+      var g = new window.dagre.graphlib.Graph({ multigraph: true });
+      g.setGraph({ rankdir: 'TB', ranksep: 60, nodesep: 40, edgesep: 20, marginx: 20, marginy: 20 });
+      g.setDefaultEdgeLabel(function () { return {}; });
+      topo.nodes.forEach(function (n){ g.setNode(n.id, { width: DEV_W, height: DEV_H, node: n }); });
+      (topo.segments || []).forEach(function (s){ g.setNode(s.id, { width: SEG_W, height: SEG_H, seg: s }); });
+      topo.externals.forEach(function (e){ g.setNode(e.id, { width: EXT_W, height: EXT_H, ext: e }); });
+
+      topo.edges.forEach(function (e, i){
+        var name = 'e' + i;
+        g.setEdge(e.a, e.b, {}, name);
+        edgeMeta.push({ v: e.a, w: e.b, name: name, kind: 'edge', e: e });
+      });
+      topo.externals.forEach(function (ex){
+        (ex.from || []).forEach(function (devLabel, j){
+          var name = 'x' + ex.id + '_' + j;
+          g.setEdge(devLabel, ex.id, {}, name);
+          edgeMeta.push({ v: devLabel, w: ex.id, name: name, kind: 'ext', ex: ex });
+        });
+      });
+      window.dagre.layout(g);
+      layout = { g: g, width: g.graph().width || 400, height: g.graph().height || 300 };
+    } else {
+      // fallback: force layout from core (no routed edges, straight lines).
+      // Segments participate as normal nodes so device→segment links pull them in.
+      var W0 = 760, H0 = 460;
+      var allIds = topo.nodes.map(function (n){ return n.id; })
+                   .concat((topo.segments || []).map(function (s){ return s.id; }));
+      var lay = Core.layoutTopology(allIds, topo.edges, { width: W0, height: H0, pad: 64 });
+      var fg = { node: function (id){ return lay[id] ? { x: lay[id].x, y: lay[id].y } : null; },
+                 edge: function (){ return null; } };
+      topo.edges.forEach(function (e, i){ edgeMeta.push({ v:e.a, w:e.b, kind:'edge', e:e }); });
+      topo.externals.forEach(function (ex){ (ex.from||[]).forEach(function (dl){
+        edgeMeta.push({ v:dl, w:ex.id, kind:'ext', ex:ex }); }); });
+      topo.externals.forEach(function (ex, i){
+        var a = lay[(ex.from||[])[0]] || { x:W0/2, y:H0/2 };
+        lay[ex.id] = { x: Math.min(W0-30, a.x + 90), y: Math.min(H0-30, a.y + 60 + i*30) };
+      });
+      layout = { g: fg, width: W0, height: H0, fallback: lay };
+    }
+
+    function nodeXY(id){
+      var nd = layout.g.node(id);
+      if (nd) return { x: nd.x, y: nd.y };
+      return layout.fallback && layout.fallback[id];
+    }
+
+    var VB_W = Math.max(320, layout.width), VB_H = Math.max(240, layout.height);
+    // The svg keeps its full native size (VB_W×VB_H) so nodes never shrink to fit
+    // a small panel; instead the whole graph lives in a pan/zoom group, and a
+    // scrollable/fixed-height wrapper shows a viewport onto it. Export serialises
+    // the untransformed group at native size, so the saved file is always full-res.
+    topoState = { vbw: VB_W, vbh: VB_H };
+    var svg = '<svg viewBox="0 0 ' + VB_W.toFixed(0) + ' ' + VB_H.toFixed(0) + '" ' +
+              'width="' + VB_W.toFixed(0) + '" height="' + VB_H.toFixed(0) + '" ' +
+              'class="topo" id="toposvg" xmlns="http://www.w3.org/2000/svg">';
+    svg += '<defs>' +
+      '<marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">' +
+      '<path d="M0,0 L7,3 L0,6 Z" fill="#1565c0"/></marker></defs>';
+    svg += '<g id="topoview">';  // everything below pans/zooms as one group
+
+    // edges: use dagre's routed points when available, else a straight line
+    edgeMeta.forEach(function (m){
+      var col, dash = '', arrow = '', basis;
+      if (m.kind === 'edge') {
+        var st = EDGE_STYLE[m.e.type]; col = st.color;
+        if (m.e.confidence === 'medium') dash = ' stroke-dasharray="6 4"';
+        if (m.e.directed) arrow = ' marker-end="url(#arr)"';
+        basis = m.e.basis;
+      } else {
+        col = m.ex.vpn ? EDGE_STYLE.vpn.color : '#9aa0ab';
+        dash = ' stroke-dasharray="2 3"';
+        basis = (m.ex.vpn ? 'IPsec to ' : 'route to ') + m.ex.ip + ' (external, not imported)';
+      }
+      var d = '';
+      var ge = m.name ? layout.g.edge(m.v, m.w, m.name) : null;
+      if (ge && ge.points && ge.points.length) {
+        d = 'M' + ge.points.map(function (p){ return p.x.toFixed(1)+','+p.y.toFixed(1); }).join(' L');
+      } else {
+        var pa = nodeXY(m.v), pb = nodeXY(m.w);
+        if (!pa || !pb) return;
+        d = 'M'+pa.x.toFixed(1)+','+pa.y.toFixed(1)+' L'+pb.x.toFixed(1)+','+pb.y.toFixed(1);
+      }
+      svg += '<path class="edge" data-basis="' + esc(basis) + '" d="' + d + '" fill="none" ' +
+             'stroke="'+col+'" stroke-width="2"' + dash + arrow + '/>';
+    });
+
+    // device nodes
+    topo.nodes.forEach(function (n){
+      var p = nodeXY(n.id); if (!p) return;
+      var hw = DEV_W/2, hh = DEV_H/2;
+      svg += '<g class="dnode" data-dev="'+esc(n.id)+'" transform="translate('+p.x.toFixed(1)+','+p.y.toFixed(1)+')">' +
+             '<rect x="'+(-hw)+'" y="'+(-hh)+'" width="'+DEV_W+'" height="'+DEV_H+'" rx="7" fill="#fff" stroke="#3b73d6" stroke-width="1.5"/>' +
+             '<text text-anchor="middle" y="-3" class="tnode">'+esc(n.id)+'</text>' +
+             '<text text-anchor="middle" y="12" class="tnodesub">'+esc(n.info.model || '')+'</text></g>';
+    });
+    // segment (network) nodes — rounded green pills, one per connected network
+    (topo.segments || []).forEach(function (s){
+      var p = nodeXY(s.id); if (!p) return;
+      var hw = SEG_W/2, hh = SEG_H/2;
+      var label = s.net.replace(/\/(\d+)\/\1$/, '/$1'); // collapse "x/24/24" display artefact
+      var fill = s.multiVdom ? '#fff8e1' : '#eaf5ea';
+      var stroke = s.multiVdom ? '#f9a825' : '#2e7d32';
+      var sub = (s.deviceCount > 1 ? s.deviceCount + ' devices' : '') +
+                (s.multiVdom ? (s.deviceCount > 1 ? ' · ' : '') + 'multi-vdom' : '');
+      svg += '<g transform="translate('+p.x.toFixed(1)+','+p.y.toFixed(1)+')">' +
+             '<rect x="'+(-hw)+'" y="'+(-hh)+'" width="'+SEG_W+'" height="'+SEG_H+'" rx="16" ' +
+             'fill="'+fill+'" stroke="'+stroke+'" stroke-width="1.4"/>' +
+             '<text text-anchor="middle" y="'+(sub?-1:4)+'" class="tseg">'+esc(label)+'</text>' +
+             (sub ? '<text text-anchor="middle" y="11" class="tsegsub">'+esc(sub)+'</text>' : '') +
+             '</g>';
+    });
+    // external nodes
+    topo.externals.forEach(function (ex){
+      var p = nodeXY(ex.id); if (!p) return;
+      var hw = EXT_W/2, hh = EXT_H/2;
+      svg += '<g transform="translate('+p.x.toFixed(1)+','+p.y.toFixed(1)+')">' +
+             '<rect x="'+(-hw)+'" y="'+(-hh)+'" width="'+EXT_W+'" height="'+EXT_H+'" rx="16" ' +
+             'fill="#f4f5f7" stroke="#b0b4bc" stroke-dasharray="3 2"/>' +
+             '<text text-anchor="middle" y="3" class="text-ext">'+esc(ex.ip)+'</text></g>';
+    });
+    svg += '</g></svg>';  // close #topoview then svg
+
+    var usedTypes = {};
+    topo.edges.forEach(function (e){ usedTypes[e.type] = true; });
+    var legend = '<div class="topolegend">' +
+      Object.keys(EDGE_STYLE).filter(function (k){ return usedTypes[k]; }).map(function (k){
+        return '<span><i style="background:'+EDGE_STYLE[k].color+'"></i>'+EDGE_STYLE[k].label+'</span>';
+      }).join('') +
+      '<span><i class="dashed"></i>medium (may cross L2)</span>' +
+      '<span><i class="ext"></i>external / not imported</span></div>';
+
+    var toolbar = '<div class="topotools">' +
+      '<button data-topo="mode" class="modebtn" title="Toggle segment / adjacency view">' +
+        (topoMode === 'segments' ? 'View: networks' : 'View: device links') + '</button>' +
+      '<span class="tsep"></span>' +
+      '<button data-topo="out" title="Zoom out">−</button>' +
+      '<button data-topo="in" title="Zoom in">+</button>' +
+      '<button data-topo="fit" title="Fit to window">Fit</button>' +
+      '<button data-topo="reset" title="Reset to 100%">100%</button>' +
+      '<span class="tzoom" id="tzoom">100%</span>' +
+      '<button data-topo="export" title="Download full-resolution SVG">Export SVG</button>' +
+      '<span class="thint">scroll = zoom · drag = pan</span></div>';
+
+    el.innerHTML = '<p class="hint">' + esc(note) + '</p>' + legend + toolbar +
+      '<div class="topowrap" id="topowrap">' + svg + '</div>' +
+      '<div id="topobasis" class="topobasis">Click a link to see how it was inferred.</div>';
+
+    // reset view and fit the fresh graph into the viewport
+    topoView = { scale: 1, tx: 0, ty: 0 };
+    topoFit();
+  }
+
+  // ---------- topology pan / zoom / export ----------
+  function topoApply() {
+    var g = document.getElementById('topoview');
+    if (!g) return;
+    g.setAttribute('transform',
+      'translate(' + topoView.tx.toFixed(1) + ',' + topoView.ty.toFixed(1) + ') scale(' + topoView.scale.toFixed(3) + ')');
+    var z = document.getElementById('tzoom');
+    if (z) z.textContent = Math.round(topoView.scale * 100) + '%';
+    // keep the svg canvas big enough to scroll the scaled graph
+    var svg = document.getElementById('toposvg');
+    if (svg) {
+      svg.setAttribute('width', (topoState.vbw * topoView.scale).toFixed(0));
+      svg.setAttribute('height', (topoState.vbh * topoView.scale).toFixed(0));
+      svg.setAttribute('viewBox', '0 0 ' + topoState.vbw + ' ' + topoState.vbh);
+    }
+  }
+  function topoZoom(factor, cx, cy) {
+    var s = Math.max(0.2, Math.min(4, topoView.scale * factor));
+    topoView.scale = s;
+    topoApply();
+  }
+  function topoFit() {
+    var wrap = document.getElementById('topowrap');
+    if (!wrap || !topoState.vbw) return;
+    var pad = 24;
+    var sx = (wrap.clientWidth - pad) / topoState.vbw;
+    var sy = (wrap.clientHeight - pad) / topoState.vbh;
+    topoView.scale = Math.max(0.2, Math.min(2, Math.min(sx, sy)));
+    topoView.tx = 0; topoView.ty = 0;
+    topoApply();
+  }
+  function topoExportSvg() {
+    // serialise the graph at NATIVE size (untransformed) so the file is full-res
+    var src = document.getElementById('toposvg');
+    if (!src) return;
+    var clone = src.cloneNode(true);
+    clone.setAttribute('width', topoState.vbw);
+    clone.setAttribute('height', topoState.vbh);
+    clone.setAttribute('viewBox', '0 0 ' + topoState.vbw + ' ' + topoState.vbh);
+    var view = clone.querySelector('#topoview');
+    if (view) view.removeAttribute('transform');  // export unpanned/unzoomed
+    var xml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+              new XMLSerializer().serializeToString(clone);
+    var blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'topology.svg';
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+    setStatus('Exported topology.svg (' + topoState.vbw + '×' + topoState.vbh + ')');
+  }
+
+  // ---------- detail modal (double-click any row/tree line) ----------
+  // resolve which device's parsed config a line belongs to. In the merged
+  // multi-device view a row carries its own dev tag, so the detail view shows
+  // the RIGHT device's config, not device[0]'s same-numbered line.
+  function parsedOf(dev) {
+    if (dev && dev !== '*') {
+      var d = DEVICES.filter(function (x){ return x.label === dev; })[0];
+      if (d) return d;
+    }
+    return curDevice() || DEVICES[0] || null;
+  }
+  function showDetail(line, dev) {
+    if (!line || !A) return;
+    var d = parsedOf(dev);
+    if (!d) return;
+    var ctx = Core.getContext(d.parsed, line, 3, 40);
+    if (!ctx.length) return;
+    var body = ctx.map(function (c){
+      var cls = c.hit ? ' class="ctxhit"' : '';
+      return '<div' + cls + '><span class="ln">' + c.n + '</span>' + esc(c.text) + '</div>';
+    }).join('');
+    document.getElementById('mdTitle').textContent =
+      (DEVICES.length > 1 ? d.label + ' — ' : '') + 'config around line ' + line;
+    document.getElementById('mdBody').innerHTML = body;
+    document.getElementById('modal').style.display = 'flex';
+  }
+  function closeDetail() { document.getElementById('modal').style.display = 'none'; }
+
+  // ---------- CLI generation from ticked rows ----------
+  function regenCli() {
+    var bar = document.getElementById('clibar');
+    var ta = document.getElementById('cliout');
+    var lbl = document.getElementById('clilbl');
+    if (!A || (curTab !== 'comp' && curTab !== 'safe' && curTab !== 'dup')) {
+      bar.style.display = 'none';
+      return;
+    }
+    bar.style.display = '';
+    var vm = A.vdomMode;
+    if (curTab === 'comp') {
+      var recs = A.comp.filter(function (r){ return sel.comp.has(r._id) && !r.Pass && !r.Skip; });
+      if (!recs.length) { ta.value = '# Tick failing rows to build remediation CLI.'; lbl.textContent = 'Remediation CLI'; return; }
+      ta.value = Core.buildFixCli(recs, vm);
+      lbl.textContent = 'Remediation CLI — ' + recs.length + ' finding(s)';
+    } else if (curTab === 'safe') {
+      var recs2 = A.clean.safe.filter(function (r){ return sel.safe.has(r._id); });
+      if (!recs2.length) { ta.value = '# Tick objects to build the cleanup CLI.'; lbl.textContent = 'Cleanup CLI'; return; }
+      ta.value = Core.buildSafeCli(recs2, vm);
+      lbl.textContent = 'Cleanup CLI — ' + recs2.length + ' object(s)';
+    } else {
+      var recs3 = A.dups.filter(function (r){ return sel.dup.has(r._id); });
+      if (!recs3.length) { ta.value = '# Tick duplicate groups to build the merge plan.'; lbl.textContent = 'Merge plan'; return; }
+      var dvc = curDevice() || DEVICES[0];
+      var usedBy = dvc.usedBy || (dvc.usedBy = Core.buildUsedBy(dvc.parsed));
+      ta.value = Core.buildDecideCli(recs3, vm, usedBy);
+      lbl.textContent = 'Merge plan — ' + recs3.length + ' group(s)';
+    }
+  }
+  function tickAll(on) {
+    if (!A) return;
+    if (curTab === 'comp') {
+      A.comp.forEach(function (r){ if (matchRow(r) && !r.Pass && !r.Skip) { on ? sel.comp.add(r._id) : sel.comp.delete(r._id); } });
+      renderComp();
+    } else if (curTab === 'safe') {
+      A.clean.safe.forEach(function (r){ if (matchRow(r)) { on ? sel.safe.add(r._id) : sel.safe.delete(r._id); } });
+      renderSafe();
+    } else if (curTab === 'dup') {
+      A.dups.forEach(function (r){ if (matchRow(r)) { on ? sel.dup.add(r._id) : sel.dup.delete(r._id); } });
+      renderDup();
+    }
+    regenCli();
+  }
+
+  // ---------- table + csv ----------
+  // sort key: type rank 0 = numeric (IP/number) sorts before rank 1 = string.
+  // IPv4/CIDR -> address*100+prefix so numeric order is correct, not lexical.
+  function sortKey(text) {
+    var t = (text || '').trim();
+    var m = t.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,3}))?/);
+    if (m) {
+      var addr = ((+m[1]) * 16777216) + ((+m[2]) * 65536) + ((+m[3]) * 256) + (+m[4]);
+      var pfx = m[5] !== undefined ? +m[5] : 32;
+      return { t: 0, v: addr * 100 + pfx };
+    }
+    if (t !== '' && /^-?\d+(\.\d+)?$/.test(t)) return { t: 0, v: parseFloat(t) };
+    if (t === '') return { t: 2, v: '' };               // blanks sort last
+    return { t: 1, v: t.toLowerCase() };
+  }
+  function cellSortVal(td) {
+    var cb = td.querySelector('input[type=checkbox]');
+    if (cb) return { t: 0, v: cb.checked ? 0 : 1 };     // checkbox column: ticked first
+    return sortKey(td.textContent);
+  }
+  // delegated: click any header in a .panel table (except the matrix) to sort
+  function sortTable(table, colIdx, dir) {
+    var tbody = table.tBodies[0];
+    if (!tbody) return;
+    var rows = Array.prototype.slice.call(tbody.rows);
+    rows.sort(function (a, b) {
+      var ka = cellSortVal(a.cells[colIdx]), kb = cellSortVal(b.cells[colIdx]);
+      if (ka.t !== kb.t) return ka.t - kb.t;           // numbers before strings
+      var c = ka.v < kb.v ? -1 : ka.v > kb.v ? 1 : 0;
+      return dir === 'desc' ? -c : c;
+    });
+    rows.forEach(function (r) { tbody.appendChild(r); });
+  }
+
+  // build the per-row {dev, line} tags parallel to a rows array
+  function metaOf(rows, lineField) {
+    return rows.map(function (r){ return { dev: r.Dev, line: r[lineField] }; });
+  }
+  // rowMeta (optional) is parallel to body: each entry {dev, line} tags the <tr>
+  // so a double-click can resolve BOTH the source device and the config line,
+  // which is what makes detail lookup correct in the merged multi-device view.
+  function table(head, body, note, rowMeta) {
+    var h = note ? '<p class="hint">' + esc(note) + '</p>' : '';
+    if (body.length === 0) return h + '<p class="empty">No items for this vdom.</p>';
+    h += '<table class="sortable"><thead><tr>' +
+         head.map(function (x){ return '<th class="sorth">'+x+'<span class="arr"></span></th>'; }).join('') +
+         '</tr></thead><tbody>';
+    h += body.map(function (r, i){
+      var m = rowMeta && rowMeta[i];
+      var attr = m ? ' data-dev="' + esc(m.dev || '') + '" data-line="' + (m.line || '') + '"' : '';
+      return '<tr' + attr + '>' + r.map(function (c){ return '<td>'+(c===undefined||c===null?'':c)+'</td>'; }).join('') + '</tr>';
+    }).join('');
+    return h + '</tbody></table>';
+  }
+  function toCsv(head, rows) {
+    function q(s){ return '"' + String(s==null?'':s).replace(/"/g,'""') + '"'; }
+    var lines = [head.map(q).join(',')];
+    rows.forEach(function (r){ lines.push(r.map(q).join(',')); });
+    return '\ufeff' + lines.join('\r\n'); // BOM so Excel reads UTF-8
+  }
+  function download(name, text) {
+    var blob = new Blob([text], {type:'text/csv;charset=utf-8'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+  }
+  function exportCsv() {
+    if (!A) return;
+    var multi = DEVICES.length > 1;
+    var spec = Core.csvSpec(curTab, multi);
+    if (!spec) { setStatus('Overview has nothing to export — pick a data tab.'); return; }
+    var src = curTab === 'comp' ? A.comp
+            : curTab === 'safe' ? A.clean.safe
+            : curTab === 'dup'  ? A.dups
+            : A.routes;
+    var rows = src.filter(function (r){ return matchRow(r); }).map(spec.row);
+    download(curTab + '.csv', toCsv(spec.headers, rows));
+  }
+
+  // ---------- tabs / plumbing ----------
+  function switchTab(id) {
+    curTab = id;
+    TABS.forEach(function (t){
+      document.getElementById(t).style.display = (t===id)?'':'none';
+      document.getElementById('tab_'+t).classList.toggle('active', t===id);
+    });
+    regenCli();
+  }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+  function setStatus(s){ document.getElementById('status').textContent = s; }
+  function show(id){ document.getElementById('drop').style.display='none';
+    document.getElementById('workspace').style.display='flex'; }
+
+  // ---------- prefs (localStorage) ----------
+  function loadPrefs() {
+    try {
+      var p = JSON.parse(localStorage.getItem('fortitoolkit.prefs') || '{}');
+      document.getElementById('chkPass').checked = !!p.showPass;
+      document.getElementById('chkCross').checked = !!p.cross;
+    } catch (e) {}
+  }
+  function savePrefs() {
+    try {
+      localStorage.setItem('fortitoolkit.prefs', JSON.stringify({
+        showPass: document.getElementById('chkPass').checked,
+        cross: document.getElementById('chkCross').checked
+      }));
+    } catch (e) {}
+  }
+
+  // ---------- wire up ----------
+  // read one file and append it as a device (keeps stored text for re-analysis)
+  function readFile(file) {
+    var r = new FileReader();
+    r.onload = function () { addDevice(r.result, file.name, file); };
+    r.readAsText(file);
+  }
+  function readFiles(fileList) {
+    Array.prototype.slice.call(fileList).forEach(function (f){ readFile(f); });
+  }
+  // shows a "pick a device" note on topology tabs when the merged view is active
+  function needDevice(panelId, title) {
+    document.getElementById(panelId).innerHTML =
+      '<p class="empty">' + esc(title) + ' shows one device at a time.<br>' +
+      'Pick a device in the tree on the left.</p>';
+  }
+  // re-run analysis for every loaded device (used when "compare across VDOMs" flips)
+  function reanalyzeAll() {
+    var texts = DEVICES.map(function (d){ return { t:d._text, n:d.fileName }; });
+    DEVICES = []; uidSeq = 0; collapsed = {};
+    texts.forEach(function (x){ if (x.t != null) addDevice(x.t, x.n); });
+  }
+  window.addEventListener('DOMContentLoaded', function () {
+    loadPrefs();
+    var drop = document.getElementById('drop');
+    var picker = document.getElementById('picker');
+    drop.onclick = function () { picker.click(); };
+    picker.onchange = function () { if (picker.files.length) readFiles(picker.files); picker.value=''; };
+    ['dragover','dragenter'].forEach(function (ev){
+      document.body.addEventListener(ev, function (e){ e.preventDefault();
+        drop.classList.add('hot'); }); });
+    ['dragleave','drop'].forEach(function (ev){
+      document.body.addEventListener(ev, function (e){ e.preventDefault();
+        drop.classList.remove('hot'); }); });
+    document.body.addEventListener('drop', function (e){
+      e.preventDefault();
+      if (e.dataTransfer.files && e.dataTransfer.files.length) readFiles(e.dataTransfer.files);
+    });
+    document.getElementById('btnOpen').onclick = function(){ picker.click(); };
+    document.getElementById('btnCsv').onclick = exportCsv;
+    document.getElementById('chkPass').onchange = function(){ savePrefs(); if (A) renderComp(); };
+    document.getElementById('chkCross').onchange = function(){ savePrefs();
+      if (DEVICES.length) reanalyzeAll(); };
+    // click a device card in the merged overview to focus that device
+    document.getElementById('ov').addEventListener('click', function (e){
+      var card = e.target.closest ? e.target.closest('[data-dev]') : null;
+      if (card) { curDev = card.getAttribute('data-dev'); curV = '*'; buildTree(); renderAll(); }
+    });
+    // topology: click an edge to reveal its evidence; click a node to focus it
+    var topoEl = document.getElementById('topo');
+    topoEl.addEventListener('click', function (e){
+      // toolbar buttons
+      var btn = e.target.closest ? e.target.closest('[data-topo]') : null;
+      if (btn) {
+        var act = btn.getAttribute('data-topo');
+        if (act === 'in') topoZoom(1.25);
+        else if (act === 'out') topoZoom(0.8);
+        else if (act === 'fit') topoFit();
+        else if (act === 'reset') { topoView = { scale:1, tx:0, ty:0 }; topoApply(); }
+        else if (act === 'export') topoExportSvg();
+        else if (act === 'mode') { topoMode = (topoMode === 'segments' ? 'adjacency' : 'segments'); renderTopo(); }
+        return;
+      }
+      var edge = e.target.closest ? e.target.closest('.edge') : null;
+      if (edge) {
+        var b = document.getElementById('topobasis');
+        if (b) b.textContent = edge.getAttribute('data-basis');
+        return;
+      }
+      var node = e.target.closest ? e.target.closest('.dnode') : null;
+      if (node) {
+        var dev = node.getAttribute('data-dev');
+        if (dev && dev.indexOf('ext:') !== 0) { curDev = dev; curV = '*'; buildTree(); renderAll(); }
+      }
+    });
+    // wheel = zoom (centred on the viewport)
+    topoEl.addEventListener('wheel', function (e){
+      if (!document.getElementById('toposvg')) return;
+      e.preventDefault();
+      topoZoom(e.deltaY < 0 ? 1.12 : 0.89);
+    }, { passive: false });
+    // drag = pan the scroll container
+    (function () {
+      var dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+      topoEl.addEventListener('mousedown', function (e){
+        var wrap = document.getElementById('topowrap');
+        if (!wrap || e.target.closest('[data-topo]')) return;
+        dragging = true; sx = e.clientX; sy = e.clientY; sl = wrap.scrollLeft; st = wrap.scrollTop;
+        wrap.classList.add('grabbing');
+      });
+      window.addEventListener('mousemove', function (e){
+        if (!dragging) return;
+        var wrap = document.getElementById('topowrap');
+        wrap.scrollLeft = sl - (e.clientX - sx);
+        wrap.scrollTop  = st - (e.clientY - sy);
+      });
+      window.addEventListener('mouseup', function (){
+        dragging = false;
+        var wrap = document.getElementById('topowrap');
+        if (wrap) wrap.classList.remove('grabbing');
+      });
+    })();
+    TABS.forEach(function (t){
+      document.getElementById('tab_'+t).onclick = function(){ switchTab(t); };
+    });
+    // double-click a data row or tree line -> show original config context
+    document.body.addEventListener('dblclick', function (e){
+      // tree lines (interfaces/vpn) belong to the focused device
+      var tn = e.target.closest ? e.target.closest('.tn') : null;
+      if (tn && tn.getAttribute('data-line')) {
+        showDetail(parseInt(tn.getAttribute('data-line'), 10), curDev);
+        return;
+      }
+      // table rows carry their own device + line, so the merged view resolves correctly
+      var tr = e.target.closest ? e.target.closest('tbody tr') : null;
+      if (tr) {
+        var ln = parseInt(tr.getAttribute('data-line'), 10);
+        var dev = tr.getAttribute('data-dev');
+        if (ln > 0) showDetail(ln, dev);
+      }
+    });
+    // delegated header-click sorting for every .sortable table
+    document.body.addEventListener('click', function (e){
+      var th = e.target.closest ? e.target.closest('th.sorth') : null;
+      if (!th) return;
+      var table = th.closest('table.sortable');
+      if (!table) return;
+      var idx = Array.prototype.indexOf.call(th.parentNode.children, th);
+      var dir = th.getAttribute('data-dir') === 'asc' ? 'desc' : 'asc';
+      // clear other headers' arrows in this table
+      var ths = table.tHead.rows[0].cells;
+      for (var i = 0; i < ths.length; i++) {
+        ths[i].removeAttribute('data-dir');
+        var a = ths[i].querySelector('.arr'); if (a) a.textContent = '';
+      }
+      th.setAttribute('data-dir', dir);
+      var arr = th.querySelector('.arr'); if (arr) arr.textContent = dir === 'asc' ? ' ▲' : ' ▼';
+      sortTable(table, idx, dir);
+    });
+    document.getElementById('mdClose').onclick = closeDetail;
+    document.getElementById('modal').onclick = function (e){
+      if (e.target === document.getElementById('modal')) closeDetail();
+    };
+    document.addEventListener('keydown', function (e){
+      if (e.key === 'Escape') closeDetail();
+    });
+    // checkbox delegation for tick selection
+    document.body.addEventListener('change', function (e){
+      var el = e.target;
+      if (!el.classList) return;
+      if (el.classList.contains('tick')) {
+        var which = el.getAttribute('data-sel');
+        var id = parseInt(el.getAttribute('data-id'), 10);
+        if (el.checked) sel[which].add(id); else sel[which].delete(id);
+        regenCli();
+        return;
+      }
+      if (el.classList.contains('typetick')) {
+        var k = el.getAttribute('data-sel');
+        var type = el.getAttribute('data-type');
+        var ctx = typeCtx[k];
+        if (ctx) tickType(k, type, el.checked, ctx.typeOf, ctx.rows);
+        // re-render that tab so row checkboxes reflect the change
+        if (k === 'comp') renderComp(); else if (k === 'safe') renderSafe(); else renderDup();
+        applyIndet();
+        regenCli();
+        return;
+      }
+    });
+    document.getElementById('btnTickAll').onclick = function(){ tickAll(true); };
+    document.getElementById('btnClear').onclick = function(){ tickAll(false); };
+    document.getElementById('btnCopy').onclick = function(){
+      var ta = document.getElementById('cliout');
+      ta.select();
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(ta.value);
+        } else { document.execCommand('copy'); }
+        setStatus('CLI copied to clipboard.');
+      } catch (err) { setStatus('Copy failed — select the text and copy manually.'); }
+    };
+    switchTab('ov');
+  });
+
+  // keep raw text so "compare across vdoms" can re-run
+
+})();
+
+</script>
+</body>
+</html>
