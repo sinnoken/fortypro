@@ -1,0 +1,1816 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FortiGate Topology Viewer — zone-aware</title>
+
+<!-- External framework: vis-network handles graph layout/rendering (hierarchical
+     layered layout, drag/zoom/click interactions) so this tool does not need to
+     reimplement a layout algorithm by hand. This is a standalone companion tool,
+     not part of FortiToolkit's offline-first single-file build, so a CDN
+     dependency is a deliberate, explicit choice here (requires internet access). -->
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<!-- elkjs computes hierarchical layout POSITIONS ONLY (no rendering of its
+     own — see https://github.com/kieler/elkjs). vis-network stays the
+     renderer; this replaces vis-network's own built-in hierarchical
+     algorithm with ELK's layered algorithm for better spacing/crossing
+     minimization, while keeping every existing vis-network feature
+     (Canvas rendering, custom hexagon shapes, PNG export, click
+     interactions) completely unchanged. -->
+<script src="https://unpkg.com/elkjs@0.9.3/lib/elk.bundled.js"></script>
+
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
+    color: #24272e; background: #f4f5f7; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  header { flex: 0 0 auto; background: #fafafc; border-bottom: 1px solid #e3e5ea;
+    padding: 10px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; color: #2c313a; margin-right: 8px; }
+  header .sub { font-size: 11.5px; color: #8a909b; margin-right: auto; }
+
+  button { padding: 6px 12px; border: 1px solid #cfd3db; background: #fff; border-radius: 6px;
+    cursor: pointer; font-size: 12.5px; color: #3c4046; }
+  button:hover { background: #eef1f5; }
+  button:disabled { opacity: .55; cursor: default; }
+  button.primary { background: #3b73d6; border-color: #3b73d6; color: #fff; }
+  button.primary:hover { background: #2f5fb8; }
+
+  label.chk { font-size: 12px; color: #4a5160; display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; user-select: none; }
+  label.chk:hover { background: #eef1f5; }
+
+  #dropzone { position: fixed; inset: 0; background: rgba(59,115,214,0.12); z-index: 50;
+    display: none; align-items: center; justify-content: center; border: 3px dashed #3b73d6; }
+  #dropzone.active { display: flex; }
+  #dropzone span { background: #fff; padding: 16px 28px; border-radius: 10px; font-size: 16px;
+    font-weight: 600; color: #2c4e8f; box-shadow: 0 4px 18px rgba(0,0,0,.15); }
+
+  main { flex: 1 1 auto; display: flex; min-height: 0; }
+  #canvasWrap { flex: 1 1 auto; position: relative; min-width: 0; }
+  #network { position: absolute; inset: 0; background: #ffffff; }
+  #emptyState { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px; color: #8a909b; text-align: center; padding: 20px; }
+  #emptyState .big { font-size: 20px; color: #4a5160; }
+  #emptyState .icon { font-size: 40px; opacity: .5; }
+
+  aside { flex: 0 0 360px; border-left: 1px solid #e3e5ea; background: #fbfbfc;
+    display: flex; flex-direction: column; overflow: hidden; }
+  aside .sect { border-bottom: 1px solid #eceef1; padding: 12px 14px; overflow-y: auto; }
+  aside .sect h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .03em;
+    color: #8a909b; margin: 0 0 8px; }
+  #stats { flex: 0 0 auto; max-height: 34%; }
+  #detail { flex: 1 1 auto; }
+  .statrow { display: flex; justify-content: space-between; font-size: 12.5px; padding: 3px 0;
+    color: #3c4046; gap: 10px; }
+  .statrow b { color: #24272e; text-align: right; }
+  .statnote { font-size: 11px; color: #9aa0ab; margin-top: 6px; line-height: 1.5; }
+
+  .detail-empty { font-size: 12.5px; color: #9aa0ab; }
+  .detail-title { font-size: 13.5px; font-weight: 700; color: #24272e; margin-bottom: 2px; }
+  .detail-sub { font-size: 11.5px; color: #8a909b; margin-bottom: 10px; }
+  table.evtbl { width: 100%; border-collapse: collapse; font-size: 11.8px; }
+  table.evtbl th { text-align: left; color: #8a909b; font-weight: 600; padding: 3px 4px;
+    border-bottom: 1px solid #eceef1; position: sticky; top: 0; background: #fbfbfc; }
+  table.evtbl td { padding: 4px 4px; border-bottom: 1px solid #f2f3f5; color: #3c4046; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px;
+    font-weight: 600; }
+  .conf-high { background: #e3f2fd; color: #1565c0; }
+  .conf-medium { background: #fff8e1; color: #a1720a; }
+
+  footer { flex: 0 0 auto; border-top: 1px solid #e3e5ea; background: #fafafc;
+    padding: 8px 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 11.5px; color: #4a5160; }
+  .legkey { display: inline-flex; align-items: center; gap: 6px; }
+  .legshape { width: 16px; height: 16px; display: inline-block; flex: 0 0 auto; }
+  .legline { width: 22px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <h1>FortiGate Topology Viewer</h1>
+    <span class="sub">host.vdom → zone → 網段 · ELK 階層佈局 · 上傳 routes.csv 或拖放到頁面任意位置</span>
+    <input type="file" id="fileInput" accept=".csv" style="display:none">
+    <button class="primary" id="btnLoad">上傳 routes.csv</button>
+    <label class="chk"><input type="checkbox" id="chkGw" checked> 顯示推論連線 (gateway)</label>
+    <label class="chk"><input type="checkbox" id="chkPhysics"> 自由佈局 (拖曳物理引擎)</label>
+    <button id="btnPng" disabled>匯出 PNG(全圖)</button>
+    <span id="layoutStatus" class="sub" style="margin-left:6px"></span>
+  </header>
+
+  <main>
+    <div id="canvasWrap">
+      <div id="network"></div>
+      <div id="emptyState">
+        <div class="icon">⬚</div>
+        <div class="big">尚未載入資料</div>
+        <div>上傳一份 FortiToolkit 匯出的 routes.csv(需含 Zone 欄位)。<br>
+          這個工具不含任何內建範例資料。</div>
+      </div>
+    </div>
+    <aside>
+      <div class="sect" id="stats"><h2>統計與方法論</h2><div class="detail-empty">尚無資料</div></div>
+      <div class="sect" id="detail"><h2>節點 / 連線詳情</h2><div class="detail-empty">點擊圖中的節點或連線查看詳情</div></div>
+    </aside>
+  </main>
+
+  <footer>
+    <span class="legkey"><span class="legshape" style="background:#eef3fb;border:1.8px solid #3b73d6;border-radius:4px"></span>host.vdom(矩形)</span>
+    <span class="legkey"><span class="legshape" style="background:#eef3fb;border:1.8px solid #3b73d6;clip-path:polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0% 50%)"></span>已宣告的 zone(六邊形,實線)</span>
+    <span class="legkey"><span class="legshape" style="background:#eef3fb;border:1.8px dashed #3b73d6;clip-path:polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0% 50%)"></span>介面即邏輯 zone(六邊形,虛線,未設定 zone 的介面)</span>
+    <span class="legkey"><span class="legshape" style="background:#e7e7e9;border:1.6px solid #24272e;border-radius:50%"></span>跨裝置網段(橢圓,黑灰色,直接證據)</span>
+    <span class="legkey"><span class="legshape" style="background:#f4f5f7;border:1.4px dashed #b0b4bc;border-radius:4px"></span>外部 gateway(無法解析)</span>
+    <span class="legkey"><span class="legline" style="border-color:#9aa0ab;border-top-style:dashed"></span>host.vdom 內含 zone(結構關係)</span>
+    <span class="legkey"><span class="legline" style="border-color:#24272e"></span>Connected route(事實)</span>
+    <span class="legkey"><span class="legline" style="border-color:#c98a1f;border-top-style:dashed"></span>Gateway 推論(特定目的地,可信度分級)</span>
+    <span class="legkey"><span class="legline" style="border-color:#5b4fcf"></span>預設路由 0.0.0.0/0(事實,非分級推論)</span>
+    <span class="legkey">「⇒ default: ...」= 節點標籤上的預設路由出口,不受推論開關影響</span>
+    <span class="legkey">同色 = 同一台實體裝置</span>
+  </footer>
+
+  <div id="dropzone"><span>放開以載入 CSV</span></div>
+</div>
+
+<script>
+/* FortiTopology Viewer — pure data-processing core (no DOM).
+ * Dual-mounted (module.exports for node testing / window.TopoCore for the
+ * browser build) so the exact same code that ships is the code under test.
+ *
+ * Hierarchy (per user request, v2 — zone-aware):
+ *   host.vdom  (structural — every device/vdom pair present in the CSV)
+ *     -> zone   (structural — FortiGate's own management grouping of
+ *                interfaces; a device/vdom may have zero or more zones)
+ *         -> CIDR (topology — but only CROSS-DEVICE segments are drawn as
+ *                  individual nodes; everything else is aggregated into a
+ *                  count on the owning zone/vdom, not exploded into nodes)
+ *   An interface with NO zone attaches its CIDR directly under host.vdom.
+ *
+ * Methodology (unchanged from the prior session, still applies at the CIDR
+ * layer):
+ *   1. Dedupe rows — the export can contain the same route twice under a
+ *      different Line number (config-revision artefact).
+ *   2. 'connected' routes are GROUND TRUTH: this device really has an
+ *      interface on that network. Group by CIDR -> segments.
+ *   3. A segment is only topologically interesting across devices if >1
+ *      DISTINCT DEVICE has a connected route there. Single-device segments
+ *      are internal-only and are aggregated (counted), never drawn as their
+ *      own node — this is the "彙整呈現" behaviour the zone layer enables.
+ *   4. Static-route gateways are matched against known segments to find
+ *      additional (inferred) links, tiered by confidence:
+ *        high   = matched network prefix >= /30
+ *        medium = matched network prefix < /30
+ *      Blackhole routes never produce an edge. A gateway that resolves to a
+ *      segment the SAME (device,vdom,zone) already sits on is redundant
+ *      with the ground-truth edge and is dropped.
+ *   5. The CSV now carries a Zone column directly (populated by FortiToolkit
+ *      from FortiOS's own `config system zone` interface membership), so
+ *      this tool reads it as-is — no re-derivation needed.
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory();
+  } else {
+    root.TopoCore = factory();
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  // ---------- tiny dependency-free CSV parser (handles quoted fields,
+  // embedded commas/quotes, CRLF, and a leading BOM) ----------
+  function parseCsv(text) {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    var rows = [];
+    var row = [];
+    var field = '';
+    var inQuotes = false;
+    var i = 0;
+    var n = text.length;
+    while (i < n) {
+      var c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+          inQuotes = false; i++; continue;
+        }
+        field += c; i++; continue;
+      }
+      if (c === '"') { inQuotes = true; i++; continue; }
+      if (c === ',') { row.push(field); field = ''; i++; continue; }
+      if (c === '\r') { i++; continue; }
+      if (c === '\n') {
+        row.push(field); field = '';
+        if (row.length > 1 || row[0] !== '') rows.push(row);
+        row = []; i++; continue;
+      }
+      field += c; i++;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    if (!rows.length) return [];
+    var head = rows[0].map(function (h) { return h.trim(); });
+    return rows.slice(1).map(function (r) {
+      var obj = {};
+      head.forEach(function (h, idx) { obj[h] = (r[idx] === undefined ? '' : r[idx]); });
+      return obj;
+    });
+  }
+
+  // ---------- step 1: dedupe by topology-relevant key ----------
+  // Dedupe key MUST include Seq. Seq is FortiOS's own `edit N` route-table
+  // entry id, so two rows with the same Seq are the same config-file entry
+  // (possibly re-exported twice across a config revision — the case this
+  // function targets), while two rows with DIFFERENT Seq are genuinely
+  // separate route-table entries even if their dest/gateway/interface are
+  // identical (e.g. real-world ECMP / ranked failover entries that share a
+  // next-hop). Excluding Seq from the key was a real bug: it silently
+  // collapsed distinct static-route entries that only happened to share
+  // dest+gateway+interface, discarding real data (found via a live dataset:
+  // observed in a real multi-vdom export: one vdom had FOUR distinct
+  // 0.0.0.0/0 entries — different Seq numbers, all via the same gateway
+  // — and 3 of them were silently dropped before this fix).
+  function dedupe(rows) {
+    var seen = {};
+    var out = [];
+    var dropped = 0;
+    rows.forEach(function (r) {
+      var key = [r.device, r.vdom, r.Source, r.Seq, r.Destination, r.Gateway, r.Interface].join('|');
+      if (seen[key]) { dropped++; return; }
+      seen[key] = true;
+      out.push(r);
+    });
+    return { rows: out, dropped: dropped };
+  }
+
+  // ---------- minimal IPv4-only CIDR helpers ----------
+  function parseCidr(cidr) {
+    var slash = cidr.indexOf('/');
+    if (slash < 0) return null;
+    var ipStr = cidr.slice(0, slash);
+    var prefix = parseInt(cidr.slice(slash + 1), 10);
+    var parts = ipStr.split('.');
+    if (parts.length !== 4 || isNaN(prefix)) return null;
+    var bytes = parts.map(function (p) { return parseInt(p, 10); });
+    if (bytes.some(function (b) { return isNaN(b) || b < 0 || b > 255; })) return null;
+    var value = ((bytes[0] << 24) >>> 0) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3];
+    var mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+    return { value: value >>> 0, prefix: prefix, mask: mask, network: (value & mask) >>> 0 };
+  }
+  function parseIp(ip) {
+    var parts = ip.split('.');
+    if (parts.length !== 4) return null;
+    var bytes = parts.map(function (p) { return parseInt(p, 10); });
+    if (bytes.some(function (b) { return isNaN(b) || b < 0 || b > 255; })) return null;
+    return ((bytes[0] << 24) >>> 0) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3];
+  }
+  function ipInCidr(ipVal, cidrInfo) {
+    return (ipVal & cidrInfo.mask) >>> 0 === cidrInfo.network;
+  }
+
+  function vdomKeyOf(r) { return r.device + '|' + r.vdom; }
+  // A FortiGate zone is just a named grouping of interfaces. An interface
+  // with NO explicit zone is, in every functional sense, its own logical
+  // zone containing exactly itself — there is no third "vdom-level, no
+  // zone" bucket in FortiOS's own model, so this tool doesn't invent one
+  // either. ownerZoneKeyStr disambiguates: a real zone is keyed by its own
+  // name; an unzoned interface is keyed by '#iface:<name>' (the '#' can't
+  // collide with a real FortiOS zone name) so each distinct interface gets
+  // its own zone-level entry instead of being merged into a single catch-all.
+  function ownerZoneKeyStr(zone, iface) {
+    return zone ? zone : ('#iface:' + (iface || '(no interface)'));
+  }
+  function ownerKeyOf(device, vdom, zone, iface) {
+    return device + '|' + vdom + '|' + ownerZoneKeyStr(zone, iface);
+  }
+
+  // ---------- step 2+3: segments from connected routes (unchanged logic) ----------
+  function buildSegments(rows) {
+    var connected = rows.filter(function (r) { return r.Source === 'connected'; });
+    var segments = {}; // cidr string -> {cidrInfo, key, members:[{device,vdom,zone,iface,comment,line}]}
+    connected.forEach(function (r) {
+      var info = parseCidr(r.Destination);
+      if (!info) return; // ipv6 / malformed — not a topology fact we can place
+      var key = r.Destination;
+      var seg = segments[key] || (segments[key] = { cidrInfo: info, key: key, members: [] });
+      seg.members.push({ device: r.device, vdom: r.vdom, zone: r.Zone || '', iface: r.Interface,
+                          comment: r.Comment, line: r.Line });
+    });
+    return segments;
+  }
+
+  function crossDeviceOnly(segments) {
+    var out = {};
+    Object.keys(segments).forEach(function (k) {
+      var devs = {};
+      segments[k].members.forEach(function (m) { devs[m.device] = true; });
+      if (Object.keys(devs).length > 1) out[k] = segments[k];
+    });
+    return out;
+  }
+
+  // ---------- zone/vdom structural model ----------
+  // Every (device,vdom) present anywhere in the data gets an entry, always —
+  // purely structural, never carries CIDR data itself.
+  // Every (device,vdom,zone-or-implicit-interface) gets a "zone" entry:
+  //   - a REAL zone (r.Zone non-empty) groups every interface FortiOS put
+  //     under that zone name — multiple physical interfaces can share one.
+  //   - an IMPLICIT zone (r.Zone empty) is keyed by the interface name
+  //     itself, so EACH unzoned interface gets its OWN entry — matching the
+  //     FortiOS reality that an unzoned interface is a "zone of one".
+  // Both kinds aggregate their DISTINCT connected-route CIDRs (deduped) and
+  // split them into "shared" (touches a cross-device segment) vs "internal".
+  // A zone entry can exist with ZERO cidrs: an interface that only appears
+  // as a static route's egress (never gets its own connected route in this
+  // export — e.g. DHCP/PPPoE WAN) still needs a node to attach gateway
+  // edges to.
+  function buildStructure(rows, crossSegments) {
+    var vdoms = {};   // "device|vdom" -> { device, vdom }
+    var zones = {};   // "device|vdom|zoneKeyStr" -> { device, vdom, zone, iface, isImplicit, cidrs:Map }
+
+    rows.forEach(function (r) {
+      var vk = vdomKeyOf(r);
+      if (!vdoms[vk]) vdoms[vk] = { device: r.device, vdom: r.vdom };
+
+      // Blackhole static routes have no real egress interface (Interface is
+      // blank) and never produce a gateway edge (see gatewayEdges), so they
+      // never need an owner zone node — skip seeding one for them.
+      if (r.Source === 'static' && r.Gateway === '(blackhole)') return;
+      if (!r.Zone && !r.Interface) return; // nothing to key an implicit zone on
+
+      var zk = vk + '|' + ownerZoneKeyStr(r.Zone, r.Interface);
+      if (!zones[zk]) {
+        zones[zk] = {
+          device: r.device, vdom: r.vdom,
+          zone: r.Zone || r.Interface, // display name: real zone name, or the interface name itself
+          iface: r.Zone ? '' : r.Interface,
+          isImplicit: !r.Zone,
+          cidrs: {}
+        };
+      }
+      if (r.Source === 'connected') zones[zk].cidrs[r.Destination] = true;
+    });
+
+    function splitSharedInternal(cidrMap) {
+      var shared = [], internal = [];
+      Object.keys(cidrMap).forEach(function (c) {
+        if (crossSegments[c]) shared.push(c); else internal.push(c);
+      });
+      return { shared: shared, internal: internal, total: shared.length + internal.length };
+    }
+
+    var vdomOut = {};
+    Object.keys(vdoms).forEach(function (vk) {
+      var v = vdoms[vk];
+      vdomOut[vk] = { device: v.device, vdom: v.vdom };
+    });
+    var zoneOut = {};
+    Object.keys(zones).forEach(function (zk) {
+      var z = zones[zk];
+      zoneOut[zk] = {
+        device: z.device, vdom: z.vdom, zone: z.zone, iface: z.iface, isImplicit: z.isImplicit,
+        cidrs: splitSharedInternal(z.cidrs)
+      };
+    });
+    // vdom -> list of its zone keys, for structural "vdom contains zone" edges
+    var vdomZoneKeys = {};
+    Object.keys(zoneOut).forEach(function (zk) {
+      var vk = zoneOut[zk].device + '|' + zoneOut[zk].vdom;
+      (vdomZoneKeys[vk] || (vdomZoneKeys[vk] = [])).push(zk);
+    });
+    return { vdoms: vdomOut, zones: zoneOut, vdomZoneKeys: vdomZoneKeys };
+  }
+
+  // ---------- ground-truth edges: owning node (zone if any, else vdom) -> cross-device segment ----------
+  // owner is ALWAYS a zone-level key now — real zone or implicit (per
+  // interface) zone, never the bare vdom. See ownerKeyOf/ownerZoneKeyStr.
+  function structureLinks(crossSegments) {
+    var edges = [];
+    var seenPair = {};
+    Object.keys(crossSegments).forEach(function (segKey) {
+      var seg = crossSegments[segKey];
+      seg.members.forEach(function (m) {
+        var ownerKey = 'Z:' + ownerKeyOf(m.device, m.vdom, m.zone, m.iface);
+        var pairKey = ownerKey + '->' + segKey;
+        if (seenPair[pairKey]) return;
+        seenPair[pairKey] = true;
+        edges.push({
+          device: m.device, vdom: m.vdom, zone: m.zone, owner: ownerKey, segment: segKey,
+          iface: m.iface, comment: m.comment, line: m.line,
+          mayTraverseSwitch: seg.cidrInfo.prefix < 30
+        });
+      });
+    });
+    return edges;
+  }
+
+  // ---------- gateway-based inferred edges, tiered + redundancy-filtered ----------
+  // A default route (0.0.0.0/0) is fundamentally different information from
+  // a static route to a specific destination, and per user feedback the
+  // confidence tiering below (based on the MATCHED segment's prefix length)
+  // doesn't actually mean much for defaults: a /24 vs a /30 gateway subnet
+  // says nothing about whether "this vdom's default gateway is X" is
+  // trustworthy — that fact is directly stated in the config, not inferred.
+  // What IS genuinely useful, always, is simply: "which interface carries
+  // this owner's default route, and what gateway does it point to" — a raw
+  // fact, not a confidence-scored guess. So default routes get pulled out of
+  // the confidence-tiered pipeline entirely and get their own dedicated
+  // 'default' marker instead of 'high'/'medium', and are ALSO surfaced as an
+  // unconditional per-owner summary (buildDefaultRouteSummary) that the UI
+  // shows directly on the owning node's label — visible even with the
+  // "顯示推論連線" toggle OFF, since stating "this is the default gateway"
+  // isn't an inference, it's what the config literally says.
+  function isDefaultRoute(r) { return r.Destination === '0.0.0.0/0'; }
+
+  function gatewayEdges(rows, allSegments, structLinkEdges) {
+    var attachedOwners = {}; // "ownerKey->segKey" -> true, from ground-truth links
+    structLinkEdges.forEach(function (e) { attachedOwners[e.owner + '->' + e.segment] = true; });
+
+    var segList = Object.keys(allSegments).map(function (k) { return allSegments[k]; });
+    var static_ = rows.filter(function (r) { return r.Source === 'static'; });
+
+    var kept = [];
+    var redundant = [];
+    var blackholeCount = 0;
+    var unresolved = {}; // gateway string -> { ownerKey -> isDefault }
+    var nonIp = [];
+
+    static_.forEach(function (r) {
+      var gw = r.Gateway;
+      var isDefault = isDefaultRoute(r);
+      if (gw === '(blackhole)') { blackholeCount++; return; }
+      if (!gw) return;
+      var gwVal = parseIp(gw);
+      if (gwVal === null) { nonIp.push(r); return; }
+      var hitSeg = null;
+      for (var i = 0; i < segList.length; i++) {
+        if (ipInCidr(gwVal, segList[i].cidrInfo)) { hitSeg = segList[i]; break; }
+      }
+      var ownerKey = 'Z:' + ownerKeyOf(r.device, r.vdom, r.Zone, r.Interface);
+      if (!hitSeg) {
+        var u = unresolved[gw] || (unresolved[gw] = {});
+        // once true for this (gw, owner) pair, keep it true — a gw that is
+        // BOTH a default and a specific-destination route for the same
+        // owner (unusual, but possible) should still surface as "default"
+        // since that's the more important fact for the UI to highlight
+        u[ownerKey] = u[ownerKey] || isDefault;
+        return;
+      }
+      var key = ownerKey + '->' + hitSeg.key;
+      // non-default routes: unchanged mask-based confidence tiering.
+      // default routes: no mask-based tiering at all — 'default' is its own
+      // category, rendered with a dedicated style, never 'high'/'medium'.
+      var confidence = isDefault ? 'default' : (hitSeg.cidrInfo.prefix >= 30 ? 'high' : 'medium');
+      var edge = { device: r.device, vdom: r.vdom, zone: r.Zone || '', owner: ownerKey,
+                   iface: r.Interface, isDefault: isDefault,
+                   segment: hitSeg.key, gw: gw, confidence: confidence, dst: r.Destination, comment: r.Comment };
+      if (attachedOwners[key]) { redundant.push(edge); return; }
+      kept.push(edge);
+    });
+
+    var uniqKept = {};
+    kept.forEach(function (e) {
+      var k = e.owner + '->' + e.segment;
+      // default-route edges never compete on confidence with anything (there's
+      // only ever one 'default' tier), so this upgrade rule only applies
+      // among non-default (high vs medium) candidates, same as before.
+      if (!uniqKept[k] || (uniqKept[k].confidence === 'medium' && e.confidence === 'high')) {
+        uniqKept[k] = e;
+      }
+    });
+
+    return {
+      edges: Object.keys(uniqKept).map(function (k) { return uniqKept[k]; }),
+      redundantCount: redundant.length,
+      blackholeCount: blackholeCount,
+      nonIpGateways: nonIp,
+      unresolved: Object.keys(unresolved).map(function (gw) {
+        var owners = unresolved[gw];
+        return {
+          gw: gw, from: Object.keys(owners),
+          // true if AT LEAST ONE owner reaching this gw does so via its
+          // default route — drives the "default gateway (external)" label
+          // treatment in the UI instead of the generic muted "unresolved" one
+          isDefault: Object.keys(owners).some(function (o) { return owners[o]; })
+        };
+      })
+    };
+  }
+
+  // Unconditional, per-owner summary of every default route (0.0.0.0/0) in
+  // the dataset — a raw fact list, independent of the confidence-tiered
+  // inference pipeline above. Always computed and always shown in the UI
+  // (not gated by the "顯示推論連線" toggle) because "this zone's default
+  // route goes out interface X to gateway Y" is literally what the config
+  // says, not something the tool is guessing at.
+  // Each entry keeps seq/comment/line/routeEnabled — even though the on-node
+  // label (app.js defaultRouteLines) collapses genuinely-identical entries
+  // down to one visual line (e.g. a vdom can legitimately have several
+  // distinct 0.0.0.0/0 table entries under different Seq numbers — likely
+  // SD-WAN health-check members — that all share the same gateway),
+  // the full underlying list must stay traceable to its source line for the
+  // click-through detail panel. Silently collapsing to one line on-screen is
+  // fine for readability; silently DISCARDING the other 3 config entries
+  // from the data model would not be.
+  function buildDefaultRouteSummary(rows, allSegments) {
+    var segList = Object.keys(allSegments).map(function (k) { return allSegments[k]; });
+    var byOwner = {}; // ownerKey -> [ {iface, gw, status, segment, seq, comment, line, routeEnabled} ]
+    rows.forEach(function (r) {
+      if (r.Source !== 'static' || !isDefaultRoute(r)) return;
+      var ownerKey = 'Z:' + ownerKeyOf(r.device, r.vdom, r.Zone, r.Interface);
+      var entry = {
+        iface: r.Interface, gw: r.Gateway, seq: r.Seq, comment: r.Comment, line: r.Line,
+        routeEnabled: stripQuotesIfPresent(r.Status) !== 'disable'
+      };
+      if (r.Gateway === '(blackhole)') {
+        entry.status = 'blackhole';
+      } else if (!r.Gateway) {
+        return; // no gateway at all — nothing meaningful to summarize
+      } else {
+        var gwVal = parseIp(r.Gateway);
+        if (gwVal === null) {
+          entry.status = 'nonip'; // e.g. an IPv6 gateway in an IPv4-only view
+        } else {
+          var hitSeg = null;
+          for (var i = 0; i < segList.length; i++) {
+            if (ipInCidr(gwVal, segList[i].cidrInfo)) { hitSeg = segList[i]; break; }
+          }
+          if (hitSeg) { entry.status = 'resolved'; entry.segment = hitSeg.key; }
+          else { entry.status = 'external'; }
+        }
+      }
+      (byOwner[ownerKey] || (byOwner[ownerKey] = [])).push(entry);
+    });
+    return byOwner;
+  }
+  // r.Status from the CSV is already a plain token ('enable'/'disable'), not
+  // quoted — this helper just guards against either shape defensively so a
+  // future upstream CSV format change (quoting Status) can't silently break
+  // the enabled/disabled read.
+  function stripQuotesIfPresent(s) {
+    s = String(s || '');
+    if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') return s.slice(1, -1);
+    return s;
+  }
+
+  // ---------- top-level orchestration ----------
+  function analyze(csvText) {
+    var raw = parseCsv(csvText);
+    var d = dedupe(raw);
+    var rows = d.rows;
+
+    var allSegments = buildSegments(rows);
+    var crossSegments = crossDeviceOnly(allSegments);
+    var struct = buildStructure(rows, crossSegments);
+    var links = structureLinks(crossSegments);
+    var allLinksForRedundancy = structureLinks(allSegments); // owner already attached to ANY segment (incl internal) it's on
+    var gw = gatewayEdges(rows, allSegments, allLinksForRedundancy);
+    var defaultRoutesByOwner = buildDefaultRouteSummary(rows, allSegments);
+
+    var allDevices = Array.from(new Set(rows.map(function (r) { return r.device; }))).sort();
+
+    // which owners (V or Z keys) participate in at least one cross-device relationship
+    var relatedOwners = {};
+    links.forEach(function (e) { relatedOwners[e.owner] = true; });
+    gw.edges.forEach(function (e) { relatedOwners[e.owner] = true; });
+    var relatedDevices = {};
+    Object.keys(relatedOwners).forEach(function (ownerKey) {
+      var dev = ownerKey.split(':')[1].split('|')[0];
+      relatedDevices[dev] = true;
+    });
+    var isolatedDevices = allDevices.filter(function (dv) { return !relatedDevices[dv]; });
+
+    return {
+      rawCount: raw.length,
+      dedupedCount: rows.length,
+      droppedDuplicates: d.dropped,
+      allSegments: allSegments,
+      crossSegments: crossSegments,
+      totalSegmentCount: Object.keys(allSegments).length,
+      crossSegmentCount: Object.keys(crossSegments).length,
+      vdoms: struct.vdoms,
+      zones: struct.zones,
+      vdomZoneKeys: struct.vdomZoneKeys,
+      links: links,
+      gatewayEdges: gw.edges,
+      gatewayRedundantCount: gw.redundantCount,
+      blackholeCount: gw.blackholeCount,
+      nonIpGateways: gw.nonIpGateways,
+      unresolvedExternals: gw.unresolved,
+      defaultRoutesByOwner: defaultRoutesByOwner,
+      allDevices: allDevices,
+      isolatedDevices: isolatedDevices
+    };
+  }
+
+  return {
+    parseCsv: parseCsv,
+    dedupe: dedupe,
+    parseCidr: parseCidr,
+    parseIp: parseIp,
+    ipInCidr: ipInCidr,
+    buildSegments: buildSegments,
+    crossDeviceOnly: crossDeviceOnly,
+    buildStructure: buildStructure,
+    structureLinks: structureLinks,
+    gatewayEdges: gatewayEdges,
+    isDefaultRoute: isDefaultRoute,
+    buildDefaultRouteSummary: buildDefaultRouteSummary,
+    ownerZoneKeyStr: ownerZoneKeyStr,
+    ownerKeyOf: ownerKeyOf,
+    analyze: analyze
+  };
+});
+
+</script>
+<script>
+/* FortiTopology Viewer — UI + vis-network rendering layer.
+ * Depends on TopoCore (core_logic.js) for all data processing; this file only
+ * turns TopoCore's analysis result into vis-network nodes/edges and wires up
+ * the file input, toggles, and detail panel.
+ *
+ * Hierarchy rendered (see core_logic.js header comment for the full rationale):
+ *   host.vdom (box)  --dashed structural-->  zone (hexagon)
+ *   [host.vdom or zone]  --solid green (ground truth)-->  cross-device segment (ellipse)
+ *   [host.vdom or zone]  --dashed/solid orange (inferred)-->  cross-device segment
+ *   [host.vdom or zone]  --dashed grey-->  external gateway cluster (dashed box)
+ * Same physical device -> same color for its host.vdom AND zone nodes.
+ * Internal-only (non-cross-device) CIDRs are never drawn as nodes — they are
+ * aggregated into a "N subnets" count shown on the owning zone/vdom node and
+ * fully listed in the detail panel on click.
+ */
+(function () {
+  'use strict';
+
+  var state = {
+    analysis: null,
+    network: null,
+    chkGw: true,
+    chkPhysics: false
+  };
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>]/g, function (c) {
+      return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;';
+    });
+  }
+
+  // ---------- OKLab/OKLCH color math ----------
+  // Plain HSL hue is NOT perceptually uniform: the SAME numeric hue gap
+  // looks like very different amounts of color change depending on where
+  // on the wheel it falls (verified empirically — a 25.7° gap in the
+  // red/magenta/purple region measured roughly 35% LESS perceptual
+  // difference, via CIE Lab distance, than the same 25.7° gap in the
+  // teal/cyan/blue region). That's exactly why device colors could look
+  // "too close together" even with mathematically-equal hue spacing.
+  // OKLab/OKLCH (Björn Ottosson, 2020 — https://bottosson.github.io/posts/oklab/)
+  // is a perceptually-uniform color space designed specifically so that
+  // equal numeric steps correspond to close-to-equal perceived differences.
+  // Generating the device palette by evenly dividing OKLCH HUE (not HSL
+  // hue) is the actual fix, not a parameter tweak — same math, better space.
+  function srgbToLinear(c) { return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  function linearToSrgb(c) { return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; }
+  function rgbToOklab(r, g, b) {
+    var lr = srgbToLinear(r / 255), lg = srgbToLinear(g / 255), lb = srgbToLinear(b / 255);
+    var l = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
+    var m = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
+    var s = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
+    var l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);
+    return [
+      0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
+    ];
+  }
+  function oklabToRgbClamped(L, a, b) {
+    var l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    var m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    var s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+    var l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+    var lr = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    var lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    var lb = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+    function clamp255(v) { return Math.max(0, Math.min(255, Math.round(v * 255))); }
+    return [clamp255(linearToSrgb(lr)), clamp255(linearToSrgb(lg)), clamp255(linearToSrgb(lb))];
+  }
+  function oklabToOklch(L, a, b) {
+    var C = Math.sqrt(a * a + b * b);
+    var H = Math.atan2(b, a) * 180 / Math.PI;
+    if (H < 0) H += 360;
+    return [L, C, H];
+  }
+  function oklchToRgb(L, C, H) {
+    var hr = H * Math.PI / 180;
+    return oklabToRgbClamped(L, C * Math.cos(hr), C * Math.sin(hr));
+  }
+  function hexToRgb(hex) {
+    var v = hex.replace('#', '');
+    return [parseInt(v.slice(0, 2), 16), parseInt(v.slice(2, 4), 16), parseInt(v.slice(4, 6), 16)];
+  }
+  function hueOfHex(hex) {
+    var rgb = hexToRgb(hex);
+    var lab = rgbToOklab(rgb[0], rgb[1], rgb[2]);
+    return oklabToOklch(lab[0], lab[1], lab[2])[2];
+  }
+
+  // ---------- dynamic per-device hue palette ----------
+  // Deterministic per-device color assignment (same device -> same color
+  // every render). Applies to BOTH host.vdom (box) and zone (hexagon) nodes
+  // for that device — shape tells you WHICH LEVEL, color tells you WHICH
+  // DEVICE. Colors are COMPUTED, not hand-picked from a fixed list, for two
+  // reasons a fixed list can't satisfy at the same time:
+  //   1. Hue separation between devices should be the perceptual maximum
+  //      for however many devices happen to be loaded, computed in OKLCH
+  //      (see the color-math block above) rather than naive HSL — a fixed
+  //      list either wastes hue-space or runs out and starts repeating
+  //      past its length (the old list had only 10 entries; this tool
+  //      routinely sees 8+ devices).
+  //   2. Device colors must never visually collide with the small set of
+  //      FIXED semantic colors used elsewhere in this diagram. Their OKLCH
+  //      hues are computed once below (from their real hex values, not
+  //      hand-guessed) and reserved — see RESERVED_HUE_BANDS — device hues
+  //      are only ever chosen from what's left over. Cross-device segments
+  //      no longer need a reservation at all: they were moved to a fully
+  //      achromatic black/grey (see the segment node color above) precisely
+  //      so they can NEVER collide with any hue-based device color, which
+  //      also frees up more of the circle for device hues.
+  var RESERVED_HUE_BANDS = (function () {
+    var PAD = 22; // degrees of buffer on each side of a reserved color's exact hue
+    return [
+      [hueOfHex('#c98a1f') - PAD, hueOfHex('#c98a1f') + PAD], // amber — inferred gateway edges
+      [hueOfHex('#5b4fcf') - PAD, hueOfHex('#5b4fcf') + PAD]  // indigo — default-route edges/nodes
+    ];
+  })();               // (the muted grey used for unresolved/external nodes,
+                       // #b0b4bc, and the new black/grey segment color both
+                       // need no reserved band: near-zero OKLCH chroma reads
+                       // as neutral regardless of hue — it's desaturation,
+                       // not hue, that gives them meaning.)
+
+  // complement of the reserved bands: every hue degree actually safe to
+  // assign to a device, as a list of [start,end) arcs on the 360° circle
+  // (correctly handles the arc that wraps past 360° back through 0°)
+  function freeHueArcs(bands) {
+    var sorted = bands.slice().sort(function (a, b) { return a[0] - b[0]; });
+    var arcs = [];
+    for (var i = 0; i < sorted.length; i++) {
+      var curEnd = sorted[i][1];
+      var nextStart = (i + 1 < sorted.length) ? sorted[i + 1][0] : sorted[0][0] + 360;
+      if (nextStart > curEnd) arcs.push([curEnd, nextStart]);
+    }
+    return arcs;
+  }
+
+  // maps a 1-D position along the concatenated free arcs back to a real hue
+  // value (0-359); pos wraps modulo the total free length first
+  function hueAtPosition(arcs, totalLen, pos) {
+    pos = ((pos % totalLen) + totalLen) % totalLen;
+    for (var i = 0; i < arcs.length; i++) {
+      var len = arcs[i][1] - arcs[i][0];
+      if (pos < len) return ((arcs[i][0] + pos) % 360 + 360) % 360;
+      pos -= len;
+    }
+    return arcs[arcs.length - 1][0]; // unreachable given the modulo above
+  }
+
+  // Fixed lightness/chroma chosen via an explicit gamut sweep (see
+  // test_device_palette.js's "zero clipping across the full 360° circle"
+  // check) so no hue on the wheel gets silently clamped to the sRGB gamut
+  // boundary — clipping would distort the intended even spacing exactly at
+  // whichever hues clip, undermining the "maximum perceptual distance"
+  // guarantee this whole rewrite exists to provide. C=0.104 (L=0.62) and
+  // C=0.084 (L=0.50) are each the largest chroma that stays 100% in-gamut
+  // at their lightness, found by sweeping 0.5° hue steps.
+  var DEVICE_L = 0.62, DEVICE_C = 0.104;
+  var DEVICE_L_HL = 0.50, DEVICE_C_HL = 0.084; // darker, slightly more saturated hover/select variant
+  var DEVICE_L_BG = 0.93, DEVICE_C_BG = 0.035; // very light tint for node fill
+
+  // "先算數量再均分色相,色相距離要大": count the devices FIRST, then divide
+  // the safe OKLCH hue range by exactly that count, so every pair of
+  // devices is spaced as far apart PERCEPTUALLY as mathematically possible
+  // for that count — not just numerically equal HSL degrees that can still
+  // look bunched together in some wheel regions.
+  function buildDevicePalette(deviceOrder) {
+    var arcs = freeHueArcs(RESERVED_HUE_BANDS);
+    var totalLen = arcs.reduce(function (sum, a) { return sum + (a[1] - a[0]); }, 0);
+    var n = Math.max(deviceOrder.length, 1);
+    var step = totalLen / n;
+    var palette = {};
+    deviceOrder.forEach(function (dev, i) {
+      var hue = hueAtPosition(arcs, totalLen, (i + 0.5) * step);
+      function toCss(rgb) { return 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')'; }
+      palette[dev] = {
+        border: toCss(oklchToRgb(DEVICE_L, DEVICE_C, hue)),
+        bg: toCss(oklchToRgb(DEVICE_L_BG, DEVICE_C_BG, hue)),
+        highlightBorder: toCss(oklchToRgb(DEVICE_L_HL, DEVICE_C_HL, hue)),
+        highlightBg: toCss(oklchToRgb(DEVICE_L_BG - 0.06, DEVICE_C_BG * 1.8, hue))
+      };
+    });
+    return palette;
+  }
+
+  function vdomKey(device, vdom) { return device + '|' + vdom; }
+
+  // ---------- custom hexagon renderer ----------
+  // vis-network's built-in shape:'hexagon' (like diamond/star/triangle) is a
+  // small FIXED-size badge that draws its label as caption text BELOW it,
+  // with no background behind that text — hard to read once the canvas gets
+  // busy. Per user feedback, the hexagon silhouette itself is fine, but the
+  // text needs to be INSIDE the shape with a background, same as the box/
+  // ellipse nodes already get for free from vis-network's built-in auto-
+  // sizing. vis-network only auto-sizes box/ellipse/circle/database, not
+  // hexagon, so this draws a custom hexagon path sized to fit its own text
+  // (header line bold, body lines normal), exactly mirroring how box/ellipse
+  // already behave — just with a hexagon outline instead of a rectangle/oval.
+  // IMPORTANT: vis-network does NOT forward a node's resolved 'color'/'font'
+  // options into shape:'custom' ctxRenderer's "style" argument — this is a
+  // known library limitation (see vis-network GitHub issue #2168, "Please
+  // add an incoming parameter for custom shape node": a user hit the exact
+  // same wall and had to hack around it by smuggling color values inside the
+  // label string). Reading style.color.background/border (as an earlier
+  // version of this file did) silently falls back to a hardcoded default for
+  // EVERY node, which is why all zone hexagons rendered the same shade of
+  // blue regardless of which device/vdom they belonged to — the per-device
+  // color was computed correctly in buildGraph() but never actually reached
+  // the canvas.
+  //
+  // Fix: ctxRenderer DOES reliably receive the node's `id` (arg.id), so
+  // instead of trusting `style`, buildGraph() populates a small side-table
+  // (hexStyleById, keyed by node id) with the real background/border/font
+  // colors and dash pattern at node-creation time, and the renderer looks
+  // itself up in that table via arg.id. This sidesteps the library gap
+  // entirely rather than working around it with fragile heuristics.
+  // ---------- shared node-size measurement (single source of truth) ----------
+  // Extracted so the EXACT SAME calculation is used both (a) at actual draw
+  // time inside the hexagon ctxRenderer, and (b) ahead of time when feeding
+  // node sizes to ELK for layout (see computeElkPositions below) — two
+  // separate implementations that could silently drift apart was exactly
+  // the kind of bug this project has hit before (see CIDR-in-label vs
+  // CIDR-in-detail-panel issues earlier in this file's history), so this is
+  // deliberately ONE function called from both places.
+  function hexBoxSize(ctx, label, fontSize, fontFace) {
+    var lines = (label || '').split('\n');
+    var header = lines[0] || '';
+    var body = lines.slice(1);
+    var lineHeight = Math.round(fontSize * 1.4);
+
+    ctx.font = 'bold ' + fontSize + 'px ' + fontFace;
+    var headerWidth = ctx.measureText(header).width;
+    ctx.font = fontSize + 'px ' + fontFace;
+    var bodyWidth = 0;
+    for (var i = 0; i < body.length; i++) {
+      var w = ctx.measureText(body[i]).width;
+      if (w > bodyWidth) bodyWidth = w;
+    }
+    var textWidth = Math.max(headerWidth, bodyWidth);
+
+    var PAD_X = 16, PAD_Y = 10;
+    var totalLines = 1 + body.length;
+    var width = Math.max(textWidth + PAD_X * 2, 54);
+    var height = Math.max(lineHeight * totalLines + PAD_Y * 2, 34);
+    return { width: width, height: height, lineHeight: lineHeight, totalLines: totalLines };
+  }
+
+  // Generic box/ellipse size estimator for ELK pre-layout only (vdom /
+  // segment / external nodes use vis-network's OWN built-in auto-sizing at
+  // actual draw time, not this — this function exists purely to give ELK a
+  // realistic-enough box to compute spacing around, so the layout it
+  // produces roughly matches what vis-network will actually render).
+  // Deliberately biased slightly LARGER than the best real-size estimate:
+  // erring toward extra whitespace is the safe failure direction here —
+  // underestimating risks visually overlapping nodes, overestimating only
+  // costs a little empty space, which is harmless.
+  function estimateGenericSize(ctx, label, fontSize, fontFace, opts) {
+    opts = opts || {};
+    var lines = (label || '').split('\n');
+    ctx.font = (opts.bold ? 'bold ' : '') + fontSize + 'px ' + fontFace;
+    var maxWidth = 0;
+    lines.forEach(function (l) {
+      var w = ctx.measureText(l).width;
+      if (w > maxWidth) maxWidth = w;
+    });
+    var lineHeight = Math.round(fontSize * 1.4);
+    var padX = opts.padX != null ? opts.padX : 14;
+    var padY = opts.padY != null ? opts.padY : 10;
+    var shapeFactor = opts.shape === 'ellipse' ? 1.5 : 1; // ellipses need extra room to inscribe the text rectangle
+    return {
+      width: Math.max((maxWidth + padX * 2) * shapeFactor, 40),
+      height: Math.max(lineHeight * lines.length + padY * 2 * (opts.shape === 'ellipse' ? 1.6 : 1), 30)
+    };
+  }
+
+  function makeHexRenderer(hexStyleById) {
+    return function hexCtxRenderer(arg) {
+      var ctx = arg.ctx, x = arg.x, y = arg.y, state = arg.state || {};
+      var s = hexStyleById[arg.id] || {};
+      var rawLabel = arg.label || '';
+      var lines = rawLabel.split('\n');
+      var header = lines[0] || '';
+      var body = lines.slice(1);
+
+      var fontSize = s.fontSize || 11;
+      var fontFace = s.fontFace || 'Segoe UI';
+      var fontColor = s.fontColor || '#24272e';
+
+      var dims = hexBoxSize(ctx, rawLabel, fontSize, fontFace);
+      var width = dims.width, height = dims.height, lineHeight = dims.lineHeight, totalLines = dims.totalLines;
+
+      // hexagon silhouette matching the legend swatch: flat left/right
+      // vertical edges, angled corners at 25%/75% of width (same shape as
+      // the CSS clip-path polygon used in the footer legend).
+      function hexPath() {
+        var w2 = width / 2, h2 = height / 2, cut = w2 * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(x - w2 + cut, y - h2);
+        ctx.lineTo(x + w2 - cut, y - h2);
+        ctx.lineTo(x + w2, y);
+        ctx.lineTo(x + w2 - cut, y + h2);
+        ctx.lineTo(x - w2 + cut, y + h2);
+        ctx.lineTo(x - w2, y);
+        ctx.closePath();
+      }
+
+      return {
+        drawNode: function () {
+          var bg = s.bg || '#eef3fb';
+          var border = s.border || '#3b73d6';
+          if (state.selected || state.hover) {
+            bg = s.highlightBg || bg;
+            border = s.highlightBorder || border;
+          }
+
+          hexPath();
+          ctx.fillStyle = bg;
+          ctx.fill();
+
+          ctx.lineWidth = s.borderWidth || 2;
+          var dashes = s.borderDashes;
+          ctx.setLineDash(Array.isArray(dashes) && dashes.length ? dashes : []);
+          ctx.strokeStyle = border;
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          var startY = y - ((totalLines - 1) * lineHeight) / 2;
+          ctx.fillStyle = fontColor;
+          ctx.font = 'bold ' + fontSize + 'px ' + fontFace;
+          ctx.fillText(header, x, startY);
+          ctx.font = fontSize + 'px ' + fontFace;
+          for (var li = 0; li < body.length; li++) {
+            ctx.fillText(body[li], x, startY + lineHeight * (li + 1));
+          }
+        },
+        nodeDimensions: { width: width, height: height }
+      };
+    };
+  }
+
+  // Full CIDR list as text lines, directly inside the node label — this is
+  // what the "顯示單一裝置內部網段" checkbox used to gate in the earlier
+  // host.vdom-only design (v2). That checkbox controlled whether internal
+  // CIDRs got their own full graph nodes (all-or-nothing, and cluttered at
+  // 85 nodes when on). Once CIDRs are just text lines on the OWNING zone/
+  // vdom node instead, there's nothing left to toggle — they're always
+  // visible, which is what direct readability actually requires.
+  // Shared (cross-device) CIDRs are marked with ★ and ALSO still get their
+  // own ellipse node + edge (see buildGraph), since that edge is the actual
+  // topology fact being drawn; the ★ here is just a pointer to "look outward
+  // for this one, it's not private to this zone".
+  var MAX_CIDR_LINES = 30; // safety cap so one pathological zone can't blow up the whole layout
+  function cidrLines(agg) {
+    if (!agg || agg.total === 0) return [];
+    var sortNum = function (c) {
+      var info = TopoCore.parseCidr(c);
+      return info ? info.value * 100 + info.prefix : 0;
+    };
+    var shared = agg.shared.slice().sort(function (a, b) { return sortNum(a) - sortNum(b); });
+    var internal = agg.internal.slice().sort(function (a, b) { return sortNum(a) - sortNum(b); });
+    var lines = shared.map(function (c) { return c + ' ★'; }).concat(internal);
+    if (lines.length > MAX_CIDR_LINES) {
+      lines = lines.slice(0, MAX_CIDR_LINES - 1);
+      lines.push('… +' + (agg.total - (MAX_CIDR_LINES - 1)) + ' more (見右側詳情)');
+    }
+    return lines;
+  }
+  function labelWithCidrs(header, agg) {
+    var lines = cidrLines(agg);
+    return lines.length ? header + '\n' + lines.join('\n') : header;
+  }
+
+  // Default-route (0.0.0.0/0) annotation lines for a zone's label — this is
+  // the direct answer to "哪個介面 + 哪個 gateway" per user feedback: shown
+  // as plain text ON the node itself, unconditionally (regardless of the
+  // "顯示推論連線" toggle), because it's a raw fact straight from the config,
+  // not an inference. A "⇒" glyph makes it visually distinct from the plain
+  // CIDR lines above it. If the zone's own header already names the exact
+  // interface (the normal case for implicit zones, whose header IS the
+  // interface name), the "(via X)" suffix is skipped as redundant; it's kept
+  // for real (declared) zones, which can span multiple interfaces, so it's
+  // never ambiguous which interface actually carries the default route.
+  function defaultRouteLines(nodeId, header, a) {
+    var entries = a.defaultRoutesByOwner[nodeId];
+    if (!entries || !entries.length) return [];
+    // Multiple distinct config-file entries (different Seq — e.g. this
+    // dataset's SD-WAN-style health-check members) can legitimately share
+    // the exact same iface+gateway+resolution. Repeating an identical line
+    // 4 times on the node label adds zero new information and is pure
+    // clutter, so entries are grouped by their VISIBLE content (iface, gw,
+    // status, enabled) and a "×N" suffix communicates "yes, there really
+    // are N config entries here" without hiding that fact. The full
+    // per-entry breakdown (seq/comment/line) remains available in the
+    // click-through detail panel — see showNodeDetail — so nothing is lost,
+    // only de-duplicated for the compact always-visible label.
+    var grouped = {};
+    var order = [];
+    entries.forEach(function (e) {
+      var k = e.iface + '|' + e.gw + '|' + e.status + '|' + (e.routeEnabled ? '1' : '0');
+      if (!grouped[k]) { grouped[k] = { e: e, count: 0 }; order.push(k); }
+      grouped[k].count++;
+    });
+    return order.map(function (k) {
+      var g = grouped[k], e = g.e;
+      var viaSuffix = (e.iface && e.iface !== header) ? ' (via ' + e.iface + ')' : '';
+      var countSuffix = g.count > 1 ? ' ×' + g.count : '';
+      var disabledSuffix = e.routeEnabled ? '' : ' [disabled]';
+      var body = e.status === 'blackhole' ? '(blackhole)' : e.gw;
+      return '⇒ default: ' + body + viaSuffix + countSuffix + disabledSuffix;
+    });
+  }
+
+  // ---------- build vis-network dataset from a TopoCore analysis ----------
+  // Design rule: a host.vdom node is ALWAYS purely structural — device.vdom
+  // text and nothing else, never a CIDR list. Every route belongs one level
+  // down at the ZONE layer — and per the user's correction, an interface
+  // with no explicitly-configured FortiOS zone is treated as its own
+  // logical zone (a "zone of one"), not merged into a shared bucket. This
+  // matches FortiOS's own model exactly: a zone IS a named interface
+  // grouping, so an unzoned interface is trivially its own singleton group.
+  // core_logic.js already computes this uniformly (every owner key is a
+  // zone-level key, real or per-interface-implicit), so buildGraph needs NO
+  // vdom-owner special-casing at all — every zone entry, real or implicit,
+  // is just drawn the same way with a style flag.
+  // ---------- buildGraph, split into single-responsibility sub-builders ----------
+  // Each sub-builder receives a shared `ctx` (nodes/edges accumulators, the
+  // addNode dedup helper, the device color palette, and the hexStyleById
+  // side-table — see makeHexRenderer's big comment for why that side-table
+  // exists) and appends whatever it's responsible for. buildGraph itself is
+  // now purely an orchestrator: it says WHAT gets built and in WHAT ORDER,
+  // while each function says HOW. This replaced one 180-line function that
+  // had grown, one feature at a time (gateway inference, default-route
+  // annotation, per-device color), into building four different kinds of
+  // nodes and three different kinds of edges all in a single scope.
+
+  function makeGraphCtx(a) {
+    var nodes = [], edges = [], nodeIds = {};
+    var deviceOrder = a.allDevices; // fixed order -> stable color per device across renders
+    var devicePalette = buildDevicePalette(deviceOrder); // built ONCE per render; see buildDevicePalette
+    // node id -> resolved draw style, read by makeHexRenderer via arg.id
+    // (see the big comment on makeHexRenderer for why this side-table exists
+    // instead of trusting vis-network's ctxRenderer "style" argument).
+    var hexStyleById = {};
+    var hexRenderer = makeHexRenderer(hexStyleById);
+    return {
+      nodes: nodes, edges: edges, nodeIds: nodeIds,
+      devicePalette: devicePalette, hexStyleById: hexStyleById, hexRenderer: hexRenderer,
+      addNode: function (id, def) {
+        if (nodeIds[id]) return;
+        nodeIds[id] = true;
+        def.id = id;
+        nodes.push(def);
+      }
+    };
+  }
+
+  // ---- level 0: host.vdom (box, filled per-device color) — structural only ----
+  function buildVdomNodes(a, ctx) {
+    Object.keys(a.vdoms).forEach(function (vk) {
+      var v = a.vdoms[vk];
+      var c = ctx.devicePalette[v.device];
+      ctx.addNode('V:' + vk, {
+        label: v.device + '.' + v.vdom,
+        level: 0, group: 'vdom', shape: 'box', margin: 10,
+        shapeProperties: { borderRadius: 6 },
+        font: { size: 13, face: 'Segoe UI', bold: true, align: 'center' },
+        color: { background: c.bg, border: c.border, highlight: { background: c.highlightBg, border: c.highlightBorder } },
+        borderWidth: 2
+      });
+    });
+  }
+
+  // ---- level 1: zone (custom-rendered hexagon — text drawn INSIDE the
+  // shape with a background fill, sized to fit its own content, exactly
+  // like the box/ellipse nodes already behave; see makeHexRenderer above
+  // for why the built-in shape:'hexagon' couldn't do this on its own).
+  // Real zones (declared in FortiOS) and implicit zones (an unzoned
+  // interface standing in as its own zone-of-one) are drawn identically
+  // EXCEPT for a dashed border on implicit ones, so you can tell
+  // "declared" from "inferred" at a glance without it looking like a
+  // fundamentally different kind of node. ----
+  function buildZoneNodes(a, ctx) {
+    Object.keys(a.zones).forEach(function (zk) {
+      var z = a.zones[zk];
+      var c = ctx.devicePalette[z.device]; // SAME palette lookup as the vdom box -> zone visually inherits its device's color
+      var header = z.zone;
+      var nodeId = 'Z:' + zk;
+      // populate the id-keyed style table the renderer actually reads from
+      // (see the comment on makeHexRenderer) — this IS the "zone color
+      // inherits vdom" behavior; devicePalette[z.device] is exactly the
+      // same lookup the vdom box for this zone's device uses, so they are
+      // guaranteed to always match, not just coincidentally similar.
+      ctx.hexStyleById[nodeId] = {
+        bg: c.bg, border: c.border, highlightBg: c.highlightBg, highlightBorder: c.highlightBorder,
+        borderWidth: z.isImplicit ? 1.6 : 2,
+        borderDashes: z.isImplicit ? [4, 3] : [],
+        fontSize: z.isImplicit ? 10.5 : 11, fontFace: 'Segoe UI',
+        fontColor: z.isImplicit ? '#6b7280' : '#24272e'
+      };
+      var baseLabel = labelWithCidrs(header, z.cidrs);
+      var defLines = defaultRouteLines(nodeId, header, a);
+      var fullLabel = defLines.length ? baseLabel + '\n' + defLines.join('\n') : baseLabel;
+      ctx.addNode(nodeId, {
+        label: fullLabel,
+        level: 1, group: z.isImplicit ? 'zoneImplicit' : 'zone',
+        shape: 'custom', ctxRenderer: ctx.hexRenderer
+      });
+      // structural edge: which host.vdom this zone belongs to. Necessary
+      // because the SAME zone name can legitimately exist on different
+      // devices (e.g. "Untrust"), so color-matching alone isn't enough to
+      // read the hierarchy at a glance.
+      ctx.edges.push({
+        from: 'V:' + vdomKey(z.device, z.vdom), to: 'Z:' + zk, id: 'vz|' + zk,
+        dashes: [3, 3], color: { color: '#b7bcc4' }, width: 1.1, arrows: '',
+        smooth: { type: 'cubicBezier', roundness: 0.5 },
+        meta: { kind: 'contains', device: z.device, vdom: z.vdom, zone: z.zone, isImplicit: z.isImplicit }
+      });
+    });
+  }
+
+  // ---- level 2: cross-device segments (ellipse, near-black/greyscale —
+  // shared ground truth, not owned by any single device so no per-device
+  // color). Per user feedback this was deliberately moved OFF any hue at
+  // all (was green, #2e7d32): a color pulled from the device palette's
+  // hue circle can never truly be guaranteed distinct from a device's
+  // assigned color once the palette became dynamic/data-dependent — an
+  // achromatic (zero-saturation) color sidesteps that entirely and can
+  // never collide with any hue-based device color, no reservation logic
+  // needed. It also reads unambiguously as "this is the graph's ground
+  // truth spine", distinct from every hue-carrying (device-owned) node. ----
+  function buildSegmentNodes(a, ctx) {
+    Object.keys(a.crossSegments).forEach(function (segKey) {
+      ctx.addNode('S:' + segKey, {
+        label: segKey, level: 2, group: 'segment', shape: 'ellipse',
+        font: { size: 11.5, face: 'Segoe UI', bold: true },
+        color: { background: '#e7e7e9', border: '#24272e', highlight: { background: '#d5d5d8', border: '#0d0f12' } },
+        borderWidth: 1.8
+      });
+    });
+  }
+
+  // ground-truth links: owner is always a zone-level key (real or implicit)
+  // computed by core_logic.js — never the bare vdom box.
+  function buildGroundTruthEdges(a, ctx) {
+    a.links.forEach(function (e) {
+      var segId = 'S:' + e.segment;
+      if (!ctx.nodeIds[segId] || !ctx.nodeIds[e.owner]) return;
+      ctx.edges.push({
+        from: e.owner, to: segId, id: 'link|' + e.owner + '->' + e.segment,
+        color: { color: '#24272e' }, width: 2, arrows: '',
+        meta: { kind: 'link', device: e.device, vdom: e.vdom, zone: e.zone, segment: e.segment,
+                iface: e.iface, comment: e.comment, line: e.line, mayTraverseSwitch: e.mayTraverseSwitch }
+      });
+    });
+  }
+
+  // inferred gateway edges (only genuinely new info — TopoCore already
+  // filtered out anything redundant with a ground-truth link at the SAME
+  // owner granularity) plus the unresolved-external-gateway nodes/edges.
+  // Both are gated behind opts.showGateway together since they're the same
+  // conceptual layer ("what did we infer, beyond direct evidence").
+  function buildGatewayLayer(a, ctx, opts) {
+    if (!opts.showGateway) return;
+
+    a.gatewayEdges.forEach(function (e) {
+      var segId = 'S:' + e.segment;
+      if (!ctx.nodeIds[segId] || !ctx.nodeIds[e.owner]) return;
+      var isDefault = e.confidence === 'default';
+      // Default-route edges get a completely dedicated style — NOT the
+      // high/medium confidence dashing scheme. Per user feedback, mask
+      // size doesn't carry meaningful confidence signal for a default
+      // route (the fact itself isn't a guess, it's stated in the config),
+      // so it shouldn't visually look like "we're not sure about this" —
+      // solid indigo with an explicit "default" edge label instead.
+      ctx.edges.push({
+        from: e.owner, to: segId, id: 'gw|' + e.owner + '->' + e.segment,
+        color: { color: isDefault ? '#5b4fcf' : '#c98a1f' },
+        width: isDefault ? 2.4 : (e.confidence === 'high' ? 2.2 : 1.6),
+        dashes: isDefault ? false : (e.confidence === 'high' ? false : [6, 4]),
+        label: isDefault ? 'default' : undefined,
+        font: isDefault ? { size: 9.5, color: '#5b4fcf', strokeWidth: 3, strokeColor: '#ffffff', align: 'top' } : undefined,
+        arrows: 'to',
+        meta: { kind: 'gateway', device: e.device, vdom: e.vdom, zone: e.zone, segment: e.segment,
+                gw: e.gw, confidence: e.confidence, isDefault: isDefault, iface: e.iface, dst: e.dst, comment: e.comment }
+      });
+    });
+
+    // external (unresolved) gateway nodes, clustered per owner (one node
+    // per owner listing all its unresolved gateways) rather than one node
+    // per IP — a single vdom can easily have several of them, and one box
+    // per IP was unreadable clutter without adding any real information.
+    // If ANY of an owner's unresolved gateways is a default route, that's
+    // important information (this zone's real internet/uplink exit that
+    // simply isn't represented anywhere in the loaded topology) — very
+    // different from "some obscure static route to nowhere" — so it gets
+    // its own distinct, non-muted style instead of blending into the grey
+    // "unresolved" treatment.
+    var byOwner = {};
+    a.unresolvedExternals.forEach(function (u) {
+      u.from.forEach(function (ownerKey) {
+        var entry = byOwner[ownerKey] || (byOwner[ownerKey] = { gws: [], isDefault: false });
+        entry.gws.push(u.gw);
+        entry.isDefault = entry.isDefault || u.isDefault;
+      });
+    });
+    Object.keys(byOwner).forEach(function (ownerKey) {
+      if (!ctx.nodeIds[ownerKey]) return;
+      var info = byOwner[ownerKey];
+      var gws = info.gws;
+      var extId = 'X:' + ownerKey;
+      var label = info.isDefault
+        ? (gws.length > 1 ? 'default gateway + ' + (gws.length - 1) + ' more' : 'default gateway: ' + gws[0])
+        : (gws.length > 1 ? gws.length + ' external gateway(s)' : gws[0]);
+      ctx.addNode(extId, {
+        label: label, level: 2, group: info.isDefault ? 'externalDefault' : 'external', shape: 'box',
+        shapeProperties: { borderRadius: 8, borderDashes: info.isDefault ? false : [4, 3] },
+        font: info.isDefault ? { size: 10.5, face: 'Segoe UI', bold: true, color: '#5b4fcf' } : { size: 10, face: 'Segoe UI', color: '#8a909b' },
+        color: info.isDefault
+          ? { background: '#eeecfb', border: '#5b4fcf', highlight: { background: '#e2ddf7', border: '#4a3fb0' } }
+          : { background: '#f4f5f7', border: '#b0b4bc', highlight: { background: '#e9eaed', border: '#8a909b' } },
+        borderWidth: info.isDefault ? 1.8 : 1.4
+      });
+      ctx.edges.push({
+        from: ownerKey, to: extId, id: 'ext|' + ownerKey,
+        color: { color: info.isDefault ? '#5b4fcf' : '#b0b4bc' },
+        width: info.isDefault ? 2 : 1.2, dashes: info.isDefault ? false : [3, 3], arrows: 'to',
+        meta: { kind: 'external', gws: gws, from: ownerKey, isDefault: info.isDefault }
+      });
+    });
+  }
+
+  function buildGraph(a, opts) {
+    var ctx = makeGraphCtx(a);
+    buildVdomNodes(a, ctx);
+    buildZoneNodes(a, ctx);
+    buildSegmentNodes(a, ctx);
+    buildGroundTruthEdges(a, ctx);
+    buildGatewayLayer(a, ctx, opts);
+    return { nodes: ctx.nodes, edges: ctx.edges, hexStyleById: ctx.hexStyleById };
+  }
+
+  // ---------- ELK-based hierarchical layout ----------
+  // Replaces vis-network's OWN built-in hierarchical layout (which is still
+  // available as the code path when layout fails to load / errors out, see
+  // the try/catch in computeElkPositions's caller) with elkjs's layered
+  // algorithm. vis-network stays the renderer (Canvas drawing, PNG export,
+  // click interactions, the custom hexagon ctxRenderer) — only the *position
+  // computation* changes. This mirrors the well-documented vis-network
+  // pattern of "run an external layout, then apply x/y with physics off and
+  // fixed:true" (the same technique commonly used to combine vis-network
+  // with dagre/elk instead of vis's own layout).
+  //
+  // A reusable off-screen canvas provides text measurement BEFORE vis-
+  // network itself exists on the page — text metrics from Canvas
+  // measureText() only depend on the font string, not on which canvas
+  // element does the measuring, so this is safe to use interchangeably with
+  // vis-network's own internal canvas at actual draw time (see hexBoxSize
+  // above, which both paths call identically).
+  var _measureCanvas = null;
+  function getMeasureCtx() {
+    if (!_measureCanvas) {
+      _measureCanvas = document.createElement('canvas');
+    }
+    return _measureCanvas.getContext('2d');
+  }
+
+  // Estimate each vis-network node's rendered width/height BEFORE vis-
+  // network has drawn anything, so ELK has realistic boxes to lay out
+  // around. Hexagon (zone) nodes reuse hexBoxSize — the exact same
+  // calculation the ctxRenderer uses at real draw time, so ELK's assumed
+  // size and the actually-rendered size can never drift apart. Box/ellipse
+  // nodes (vdom/segment/external) use the generic estimator, deliberately
+  // biased slightly larger (see estimateGenericSize's comment) since vis-
+  // network's own auto-sizing formula isn't reimplemented exactly here.
+  function estimateNodeSize(node, hexStyleById) {
+    var ctx = getMeasureCtx();
+    if (node.shape === 'custom') {
+      var s = hexStyleById[node.id] || {};
+      return hexBoxSize(ctx, node.label, s.fontSize || 11, s.fontFace || 'Segoe UI');
+    }
+    if (node.shape === 'box') {
+      var f = node.font || {};
+      return estimateGenericSize(ctx, node.label, f.size || 13, f.face || 'Segoe UI',
+        { bold: !!f.bold, padX: (node.margin || 10) + 4, padY: (node.margin || 10) + 2 });
+    }
+    if (node.shape === 'ellipse') {
+      var f2 = node.font || {};
+      return estimateGenericSize(ctx, node.label, f2.size || 11.5, f2.face || 'Segoe UI',
+        { bold: !!f2.bold, shape: 'ellipse' });
+    }
+    return { width: 80, height: 40 }; // safe fallback for any future shape
+  }
+
+  // Convert this tool's vis-network node/edge arrays into ELK's JSON graph
+  // format, run elk.layout(), and return a plain {nodeId: {x, y}} map of
+  // CENTER coordinates (vis-network's x/y is the node's center; ELK's x/y is
+  // the top-left corner of its bounding box, so the conversion below adds
+  // half the width/height back on).
+  //
+  // Deliberately flat (no ELK compound/hierarchical children nesting): the
+  // vdom->zone "contains" edges are structural but the graph is NOT a
+  // strict tree — multiple zones from DIFFERENT vdoms legitimately point to
+  // the SAME shared segment node (that cross-linking is the whole point of
+  // this tool). ELK's layered algorithm handles general directed graphs
+  // (including nodes with multiple parents) without needing compound-node
+  // nesting, so every node is just a flat sibling in one ELK graph, with
+  // both "contains" and "link"/"gateway"/"external" edges passed through
+  // uniformly. This is simpler and more correct than trying to force a
+  // tree-shaped nesting onto a graph that isn't actually a tree.
+  function computeElkPositions(graph, hexStyleById) {
+    var elkNodes = graph.nodes.map(function (n) {
+      var size = estimateNodeSize(n, hexStyleById);
+      return { id: n.id, width: size.width, height: size.height };
+    });
+    var elkEdges = graph.edges.map(function (e, i) {
+      return { id: 'e' + i, sources: [e.from], targets: [e.to] };
+    });
+    var elkGraph = {
+      id: 'root',
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'DOWN',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '70',
+        'elk.spacing.nodeNode': '35',
+        'elk.layered.spacing.edgeNodeBetweenLayers': '20',
+        'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+        'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+        'elk.layered.cycleBreaking.strategy': 'GREEDY',
+        'elk.edgeRouting': 'POLYLINE'
+      },
+      children: elkNodes,
+      edges: elkEdges
+    };
+
+    var elk = new ELK();
+    return elk.layout(elkGraph).then(function (result) {
+      var positions = {};
+      (result.children || []).forEach(function (n) {
+        positions[n.id] = { x: n.x + n.width / 2, y: n.y + n.height / 2 };
+      });
+      return positions;
+    });
+  }
+
+  // ---------- render ----------
+  // render() is now async because ELK's layout() is Promise-based. A render
+  // token guards against a race: if the user toggles a checkbox again while
+  // an ELK computation from a PREVIOUS render() call is still in flight, the
+  // stale result must be discarded rather than overwriting a newer one.
+  var _renderToken = 0;
+
+  // ---------- render(), split into three concerns ----------
+  // 1. shared vis-network options for whichever layout mode is active
+  //    (free-drag physics / ELK-computed fixed positions / hierarchical
+  //    fallback), so all three modes' option objects live in ONE place
+  //    instead of two near-duplicate copies (the ELK-fallback branch used
+  //    to hand-duplicate most of the "normal" options object — that
+  //    duplication is exactly the kind of thing that drifts out of sync
+  //    the next time only one of the two copies gets edited).
+  // 2. mountNetwork(): creates the vis.Network instance, attaches the
+  //    click-to-inspect handler, and refreshes the stats panel — used
+  //    identically by every layout mode.
+  // 3. render(): orchestrates which mode to use and in what order, with no
+  //    vis-network construction details of its own.
+
+  function visNetworkOptionsFor(mode) {
+    // mode: 'physics' | 'elk' | 'fallback'
+    var common = {
+      autoResize: true,
+      interaction: { hover: true, dragNodes: true, zoomView: true, tooltipDelay: 150 },
+      nodes: { shadow: { enabled: true, size: 4, x: 1, y: 1, color: 'rgba(0,0,0,0.08)' } },
+      edges: { smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.55 } }
+    };
+    if (mode === 'physics') {
+      // free-drag mode: vis-network's own force-directed solver picks
+      // initial positions; nodes carry no pre-set x/y. No `layout` key is
+      // set (vis-network's default is already non-hierarchical).
+      return Object.assign({}, common, {
+        physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -70, springLength: 120, avoidOverlap: 0.6 }, stabilization: { iterations: 200 } }
+      });
+    }
+    if (mode === 'elk') {
+      // ELK already computed fixed x/y on every node (see computeElkPositions
+      // + render()'s use of it) — vis-network just renders them, no
+      // additional layout algorithm of its own runs. No `layout` key needed
+      // for the same reason as 'physics' above.
+      return Object.assign({}, common, { physics: false });
+    }
+    // 'fallback': ELK failed to load — use vis-network's OWN built-in
+    // hierarchical layout, which needs no external dependency at all.
+    return Object.assign({}, common, {
+      layout: { hierarchical: { enabled: true, direction: 'UD', sortMethod: 'directed',
+        levelSeparation: 150, nodeSpacing: 130, treeSpacing: 90,
+        blockShifting: true, edgeMinimization: true, parentCentralization: true } },
+      physics: { solver: 'hierarchicalRepulsion' }
+    });
+  }
+
+  // Creates (destroying any prior instance) the vis.Network for this
+  // render pass, wires up its click-to-inspect handler, and refreshes the
+  // stats panel — identical for every layout mode, so this is the ONE place
+  // that logic lives.
+  function mountNetwork(graph, options, a, fitAfterDraw) {
+    var nodesDS = new vis.DataSet(graph.nodes);
+    var edgesDS = new vis.DataSet(graph.edges);
+
+    var container = document.getElementById('network');
+    if (state.network) state.network.destroy();
+    state.network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, options);
+
+    if (fitAfterDraw) {
+      // fit() once after applying ELK's fixed positions so the initial
+      // view is centered on the whole graph, matching what vis-network's
+      // own hierarchical mode used to do automatically on stabilization.
+      state.network.once('afterDrawing', function () { state.network.fit(); });
+    }
+
+    state.network.on('click', function (params) {
+      if (params.nodes.length) {
+        showNodeDetail(params.nodes[0], a);
+      } else if (params.edges.length) {
+        showEdgeDetail(edgesDS.get(params.edges[0]), a);
+      } else {
+        document.getElementById('detail').innerHTML = '<h2>節點 / 連線詳情</h2><div class="detail-empty">點擊圖中的節點或連線查看詳情</div>';
+      }
+    });
+
+    renderStats(a);
+  }
+
+  function render() {
+    var a = state.analysis;
+    var emptyState = document.getElementById('emptyState');
+    var btnPng = document.getElementById('btnPng');
+    if (!a) { emptyState.style.display = 'flex'; btnPng.disabled = true; renderStats(null); return; }
+    emptyState.style.display = 'none';
+    btnPng.disabled = false;
+
+    var myToken = ++_renderToken;
+    var graph = buildGraph(a, { showGateway: state.chkGw });
+
+    if (state.chkPhysics) {
+      // free-drag physics mode never used ELK to begin with — same
+      // behavior as before this refactor.
+      mountNetwork(graph, visNetworkOptionsFor('physics'), a, false);
+      setLayoutStatus('');
+      return;
+    }
+
+    setLayoutStatus('計算階層佈局中(ELK)…');
+    computeElkPositions(graph, graph.hexStyleById)
+      .then(function (positions) {
+        if (myToken !== _renderToken) return; // a newer render() superseded this one
+        graph.nodes.forEach(function (n) {
+          var p = positions[n.id];
+          if (p) { n.x = p.x; n.y = p.y; n.fixed = { x: true, y: true }; }
+        });
+        mountNetwork(graph, visNetworkOptionsFor('elk'), a, true);
+        setLayoutStatus('');
+      })
+      .catch(function (err) {
+        // ELK failed to load (e.g. no network access to the CDN) or threw —
+        // fail SAFE rather than silently showing a blank graph: fall back
+        // to vis-network's own built-in hierarchical layout, and tell the
+        // user why via the status line rather than hiding the degradation.
+        console.error('ELK layout failed, falling back to vis-network\'s built-in hierarchical layout:', err);
+        if (myToken !== _renderToken) return;
+        setLayoutStatus('⚠ ELK 佈局引擎載入失敗,已改用內建的簡易階層佈局(功能仍可正常使用)');
+        mountNetwork(graph, visNetworkOptionsFor('fallback'), a, false);
+      });
+  }
+
+  function setLayoutStatus(text) {
+    var el = document.getElementById('layoutStatus');
+    if (el) el.textContent = text;
+  }
+
+  function renderStats(a) {
+    var el = document.getElementById('stats');
+    if (!a) { el.innerHTML = '<h2>統計與方法論</h2><div class="detail-empty">尚無資料</div>'; return; }
+    function row(label, value) {
+      return '<div class="statrow"><span>' + esc(label) + '</span><b>' + esc(value) + '</b></div>';
+    }
+    var html = '<h2>統計與方法論</h2>';
+    html += row('原始列數', a.rawCount);
+    html += row('去重複後', a.dedupedCount + '(捨棄 ' + a.droppedDuplicates + ' 筆版本重複)');
+    html += row('裝置數', a.allDevices.length);
+    html += row('host.vdom 節點', Object.keys(a.vdoms).length);
+    var realZoneCount = 0, implicitZoneCount = 0;
+    Object.keys(a.zones).forEach(function (k) { a.zones[k].isImplicit ? implicitZoneCount++ : realZoneCount++; });
+    html += row('已宣告的 zone 節點', realZoneCount);
+    html += row('介面即邏輯 zone(未設定 zone)', implicitZoneCount);
+    html += row('孤立裝置', a.isolatedDevices.length || '0');
+    html += row('全部網段(CIDR)', a.totalSegmentCount);
+    html += row('跨裝置網段(繪出的節點)', a.crossSegmentCount);
+    html += row('Ground-truth 連線', a.links.length);
+    var defaultEdgeCount = a.gatewayEdges.filter(function (e) { return e.confidence === 'default'; }).length;
+    html += row('推論連線(新資訊)', a.gatewayEdges.length + (defaultEdgeCount ? '(其中 ' + defaultEdgeCount + ' 條為預設路由)' : ''));
+    html += row('推論連線(冗餘,已濾除)', a.gatewayRedundantCount);
+    html += row('Blackhole 路由(略過)', a.blackholeCount);
+    html += row('無法解析的 gateway', a.unresolvedExternals.length + (a.nonIpGateways.length ? ' +' + a.nonIpGateways.length + ' 非IP' : ''));
+    html += '<div class="statnote">階層:host.vdom → zone → 網段,CIDR 直接列在所屬 zone 節點內。' +
+      'FortiOS 的 zone 就是「一組介面的命名分組」,所以沒有設定 zone 的介面,邏輯上就是只含自己的獨立分組——' +
+      '每個未設定 zone 的介面都各自畫成一個虛線 hexagon(而非全部塞進同一個桶),與已宣告的 zone 同一層、同樣角色。' +
+      '同一裝置的 host.vdom 與 zone 節點同色,色相依裝置數量自動均分並避開推論連線(琥珀)與預設路由(靛藍)的顏色,盡量讓每台裝置一眼可辨。' +
+      '標「★」的 CIDR 同時是被 2 台以上裝置共用的網段,也畫成獨立的黑灰色橢圓節點並有連線——刻意不用任何色相,避免跟裝置顏色混淆。' +
+      '點擊任一節點可在右側看該節點每條 CIDR 的 interface/comment/line。' +
+      'gateway 推論若命中已知網段且該 zone 尚未直接掛在該網段上才視為新資訊,否則視為冗餘濾除。' +
+      '<b>預設路由(0.0.0.0/0)不套用信心分級</b>——每個 zone/vdom 的預設路由出口(介面 + gateway)是設定檔直接寫明的事實,' +
+      '不是猜測,一律以獨立的紫色「default」連線標示,並且不論「顯示推論連線」開關是否勾選,都會直接顯示在節點標籤上。</div>';
+    el.innerHTML = html;
+  }
+
+  // Full, untruncated default-route breakdown for the click-through detail
+  // panel — every distinct config-file entry (Seq/comment/line), even when
+  // several of them were collapsed into a single "×N" line on the node
+  // label itself (see defaultRouteLines). This keeps every entry traceable
+  // to its source line, per this tool's own "click a node/edge to see the
+  // evidence" principle — a compact label must never mean lost data.
+  function defaultRouteDetailTable(nodeId, a) {
+    var entries = a.defaultRoutesByOwner[nodeId];
+    if (!entries || !entries.length) return '';
+    return '<div class="detail-sub" style="margin-top:10px">預設路由(0.0.0.0/0)· ' + entries.length + ' 筆設定檔項目</div>' +
+      '<table class="evtbl"><tr><th>Gateway</th><th>Interface</th><th>狀態</th><th>Seq</th><th>Comment</th><th>Line</th></tr>' +
+      entries.map(function (e) {
+        var gwText = e.status === 'blackhole' ? '(blackhole)' : e.gw;
+        var stateText = e.status === 'resolved' ? '已定位 → ' + e.segment
+          : e.status === 'external' ? '無法定位(外部)'
+          : e.status === 'nonip' ? '非 IPv4'
+          : '(blackhole)';
+        var enabledText = e.routeEnabled ? '' : ' <span class="pill" style="background:#fde8e8;color:#a13d1f">disabled</span>';
+        return '<tr><td>' + esc(gwText) + '</td><td>' + esc(e.iface) + '</td><td>' + esc(stateText) + enabledText +
+          '</td><td>' + esc(e.seq) + '</td><td>' + esc(e.comment || '—') + '</td><td>' + esc(e.line) + '</td></tr>';
+      }).join('') + '</table>';
+  }
+
+  function cidrListTable(cidrKeys, allSegments) {
+    if (!cidrKeys.length) return '<div class="detail-empty">無</div>';
+    return '<table class="evtbl"><tr><th>CIDR</th><th>Interface</th><th>Comment</th><th>Line</th><th></th></tr>' +
+      cidrKeys.map(function (c) {
+        var seg = allSegments[c];
+        var m = seg.members[0]; // representative row for this device/zone context is resolved by caller filtering
+        var shared = seg.members.length > 1 && (function () {
+          var devs = {}; seg.members.forEach(function (mm) { devs[mm.device] = true; });
+          return Object.keys(devs).length > 1;
+        })();
+        return '<tr><td>' + esc(c) + '</td><td>' + esc(m.iface) + '</td><td>' + esc(m.comment || '—') +
+          '</td><td>' + esc(m.line) + '</td><td>' + (shared ? '<span class="pill conf-high">shared</span>' : '') + '</td></tr>';
+      }).join('') + '</table>';
+  }
+
+  function showNodeDetail(id, a) {
+    var el = document.getElementById('detail');
+    if (id.indexOf('V:') === 0) {
+      // vdom node is purely structural — it never carries CIDR data itself.
+      // Detail just summarises what's below it: real zones vs. interfaces
+      // acting as their own logical zone (per user's correction — an
+      // unzoned interface IS a zone-of-one, not a shared bucket).
+      var vk = id.slice(2);
+      var v = a.vdoms[vk];
+      if (!v) return;
+      var zoneKeysHere = a.vdomZoneKeys[vk] || [];
+      var realCount = zoneKeysHere.filter(function (k) { return !a.zones[k].isImplicit; }).length;
+      var implicitCount = zoneKeysHere.length - realCount;
+      el.innerHTML = '<h2>節點 / 連線詳情</h2>' +
+        '<div class="detail-title">' + esc(v.device) + '.' + esc(v.vdom) + '</div>' +
+        '<div class="detail-sub">host.vdom · 純結構節點,本身不帶任何網段資料</div>' +
+        '<div class="statnote">' + realCount + ' 個已宣告的 zone' +
+        (implicitCount > 0 ? ' · ' + implicitCount + ' 個介面各自視為獨立的邏輯 zone(虛線 hexagon)' : '') +
+        '。每個網段一律掛在其中一個 zone 節點下——點擊下方任一 hexagon 查看該處的網段清單。</div>';
+    } else if (id.indexOf('Z:') === 0) {
+      var zk = id.slice(2);
+      var z = a.zones[zk];
+      if (!z) return;
+      var allCidrs2 = z.cidrs.shared.concat(z.cidrs.internal).sort();
+      el.innerHTML = '<h2>節點 / 連線詳情</h2>' +
+        '<div class="detail-title">' + esc(z.zone) + '</div>' +
+        '<div class="detail-sub">' + (z.isImplicit ? '介面本身視為獨立的邏輯 zone' : '已宣告的 zone') +
+        ' · 隸屬 ' + esc(z.device) + '.' + esc(z.vdom) + ' · ' + z.cidrs.total + ' 個網段</div>' +
+        (z.isImplicit ? '<div class="statnote" style="margin:0 0 8px">此介面在 FortiGate 上沒有設定任何 system zone,依 FortiOS 的定義(zone = 一組介面的命名分組),未分組的介面本身就是只含自己的獨立分組。</div>' : '') +
+        cidrListTable(allCidrs2, a.allSegments) +
+        defaultRouteDetailTable(id, a);
+    } else if (id.indexOf('S:') === 0) {
+      var segKey = id.slice(2);
+      var seg = a.crossSegments[segKey];
+      if (!seg) return;
+      el.innerHTML = '<h2>節點 / 連線詳情</h2>' +
+        '<div class="detail-title">' + esc(segKey) + '</div>' +
+        '<div class="detail-sub">跨裝置網段 · connected route 直接證據</div>' +
+        '<table class="evtbl"><tr><th>Device</th><th>VDOM</th><th>Zone</th><th>Interface</th><th>Comment</th><th>Line</th></tr>' +
+        seg.members.map(function (m) {
+          return '<tr><td>' + esc(m.device) + '</td><td>' + esc(m.vdom) + '</td><td>' + esc(m.zone || '—') +
+                 '</td><td>' + esc(m.iface) + '</td><td>' + esc(m.comment) + '</td><td>' + esc(m.line) + '</td></tr>';
+        }).join('') + '</table>';
+    } else if (id.indexOf('X:') === 0) {
+      var ownerKey = id.slice(2);
+      el.innerHTML = '<h2>節點 / 連線詳情</h2>' +
+        '<div class="detail-title">未解析的外部 Gateway</div>' +
+        '<div class="detail-sub">來源:' + esc(ownerKey.replace(/^[VZ]:/, '').replace(/\|/g, ' / ')) + '</div>' +
+        '<div class="statnote">這些 IP 被某條 static route 當作 gateway,但在目前載入的所有裝置的 connected route 中都找不到對應網段——可能是外部網路、或是尚未載入的對端裝置。點擊連到此節點的線可查看是否為預設路由(0.0.0.0/0)。</div>';
+    }
+  }
+
+  function ownerLabel(ownerKey) {
+    if (!ownerKey) return '';
+    // owner is always 'Z:device|vdom|zoneKeyStr' now; zoneKeyStr may itself
+    // be '#iface:xxx' for an implicit zone — show the readable form either way
+    var parts = ownerKey.slice(2).split('|');
+    var zonePart = parts[2] || '';
+    var zoneDisplay = zonePart.indexOf('#iface:') === 0 ? zonePart.slice(7) + '(介面)' : zonePart;
+    return parts[0] + '.' + parts[1] + (zoneDisplay ? ' · zone ' + zoneDisplay : '');
+  }
+
+  function showEdgeDetail(edge, a) {
+    var el = document.getElementById('detail');
+    var m = edge.meta;
+    if (!m) { el.innerHTML = '<h2>節點 / 連線詳情</h2><div class="detail-empty">無詳情</div>'; return; }
+    var html = '<h2>節點 / 連線詳情</h2>';
+    if (m.kind === 'contains') {
+      html += '<div class="detail-title">' + esc(m.device) + '.' + esc(m.vdom) + ' 包含 ' +
+        (m.isImplicit ? '介面 ' + esc(m.zone) + '(視為獨立邏輯 zone)' : 'zone ' + esc(m.zone)) + '</div>' +
+        '<div class="detail-sub">結構關係,非路由連線</div>';
+    } else if (m.kind === 'link') {
+      html += '<div class="detail-title">Connected Route(直接證據)</div>' +
+        '<table class="evtbl">' +
+        '<tr><th>Device</th><td>' + esc(m.device) + '</td></tr>' +
+        '<tr><th>VDOM</th><td>' + esc(m.vdom) + '</td></tr>' +
+        '<tr><th>Zone</th><td>' + esc(m.zone || '—') + '</td></tr>' +
+        '<tr><th>Segment</th><td>' + esc(m.segment) + '</td></tr>' +
+        '<tr><th>Interface</th><td>' + esc(m.iface) + '</td></tr>' +
+        '<tr><th>Comment</th><td>' + esc(m.comment || '—') + '</td></tr>' +
+        '<tr><th>Line</th><td>' + esc(m.line) + '</td></tr>' +
+        '</table>';
+      if (m.mayTraverseSwitch) html += '<div class="statnote">此網段前綴 &lt; /30,中間可能存在未被記錄的 L2 交換器。</div>';
+    } else if (m.kind === 'gateway') {
+      if (m.isDefault) {
+        // Default routes are pulled out of the confidence-tiering system
+        // entirely (see core_logic.js comment on isDefaultRoute) — this is a
+        // stated fact from the config (this zone's default route exits via
+        // this interface to this gateway), not a confidence-scored guess,
+        // so the detail panel doesn't show a confidence pill for it at all.
+        html += '<div class="detail-title">預設路由(0.0.0.0/0)<span class="pill" style="background:#eeecfb;color:#5b4fcf">default</span></div>' +
+          '<table class="evtbl">' +
+          '<tr><th>Device</th><td>' + esc(m.device) + '</td></tr>' +
+          '<tr><th>VDOM</th><td>' + esc(m.vdom) + '</td></tr>' +
+          '<tr><th>Interface</th><td>' + esc(m.iface) + '</td></tr>' +
+          '<tr><th>Gateway</th><td>' + esc(m.gw) + '</td></tr>' +
+          '<tr><th>命中網段</th><td>' + esc(m.segment) + '</td></tr>' +
+          '<tr><th>Comment</th><td>' + esc(m.comment || '—') + '</td></tr>' +
+          '</table>' +
+          '<div class="statnote">此 vdom/zone 的預設路由(所有找不到更精確路由的流量)經由此介面走向此 gateway,並命中了已知的網段——' +
+          '這是設定檔直接寫明的事實,不是依信心分級猜測出來的關聯。</div>';
+      } else {
+        html += '<div class="detail-title">推論連線(Gateway 命中)<span class="pill conf-' + m.confidence + '">' +
+          (m.confidence === 'high' ? '高信心' : '中信心') + '</span></div>' +
+          '<table class="evtbl">' +
+          '<tr><th>Device</th><td>' + esc(m.device) + '</td></tr>' +
+          '<tr><th>VDOM</th><td>' + esc(m.vdom) + '</td></tr>' +
+          '<tr><th>Zone</th><td>' + esc(m.zone || '(介面本身視為獨立邏輯 zone)') + '</td></tr>' +
+          '<tr><th>Gateway</th><td>' + esc(m.gw) + '</td></tr>' +
+          '<tr><th>Destination</th><td>' + esc(m.dst) + '</td></tr>' +
+          '<tr><th>Comment</th><td>' + esc(m.comment || '—') + '</td></tr>' +
+          '<tr><th>Segment</th><td>' + esc(m.segment) + '</td></tr>' +
+          '</table>' +
+          '<div class="statnote">此 host.vdom / zone 本身並未直接掛在此網段上,是透過 static route 的 gateway 推論出的關聯——' +
+          (m.confidence === 'high' ? '目標網段 ≥ /30,幾乎是點對點,信心較高。' : '目標網段 &lt; /30,可能中間還有其他裝置或交換器。') + '</div>';
+      }
+    } else if (m.kind === 'external') {
+      if (m.isDefault) {
+        html += '<div class="detail-title">預設路由 gateway(無法定位)<span class="pill" style="background:#eeecfb;color:#5b4fcf">default</span></div>' +
+          '<div class="detail-sub">來源:' + esc(ownerLabel(m.from)) + '</div>' +
+          '<table class="evtbl"><tr><th>Gateway IP</th></tr>' +
+          m.gws.map(function (g) { return '<tr><td>' + esc(g) + '</td></tr>'; }).join('') + '</table>' +
+          '<div class="statnote">這是此 vdom/zone 的預設路由出口,但這個 gateway IP 在目前載入的所有裝置的 connected route 中都找不到對應網段——' +
+          '很可能是真正對外(ISP/上游)的閘道,不在目前載入的拓樸範圍內,而不是設定或資料有誤。</div>';
+      } else {
+        html += '<div class="detail-title">未解析的外部 Gateway</div>' +
+          '<div class="detail-sub">來源:' + esc(ownerLabel(m.from)) + '</div>' +
+          '<table class="evtbl"><tr><th>Gateway IP</th></tr>' +
+          m.gws.map(function (g) { return '<tr><td>' + esc(g) + '</td></tr>'; }).join('') + '</table>';
+      }
+    }
+    el.innerHTML = html;
+  }
+
+  // ---------- PNG export: the WHOLE graph, not just the current viewport ----------
+  function exportFullPng() {
+    if (!state.network) { alert('尚未載入資料'); return; }
+    var net = state.network;
+    var container = document.getElementById('network');
+    var btn = document.getElementById('btnPng');
+    var originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '匯出中…';
+
+    var positions = net.getPositions();
+    var ids = Object.keys(positions);
+    if (!ids.length) { btn.disabled = false; btn.textContent = originalLabel; alert('目前沒有可匯出的節點'); return; }
+
+    var xs = ids.map(function (id) { return positions[id].x; });
+    var ys = ids.map(function (id) { return positions[id].y; });
+    var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+    var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+
+    var MARGIN = 220;
+    var width = Math.min(Math.max(maxX - minX + MARGIN * 2, 500), 8000);
+    var height = Math.min(Math.max(maxY - minY + MARGIN * 2, 400), 8000);
+
+    var savedStyle = container.style.cssText;
+    var savedView = { position: net.getViewPosition(), scale: net.getScale() };
+
+    container.style.cssText = 'position:fixed; left:-20000px; top:0; width:' +
+      width + 'px; height:' + height + 'px; background:#ffffff; z-index:-1;';
+
+    net.setSize(width + 'px', height + 'px');
+    net.moveTo({ position: { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }, scale: 1, animation: false });
+    net.redraw();
+
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        var canvas = container.querySelector('canvas');
+        var dataUrl = canvas ? canvas.toDataURL('image/png') : null;
+
+        container.style.cssText = savedStyle;
+        net.setSize('100%', '100%');
+        net.redraw();
+        net.moveTo({ position: savedView.position, scale: savedView.scale, animation: false });
+
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+
+        if (!dataUrl) { alert('匯出失敗:找不到畫布'); return; }
+        var a = document.createElement('a');
+        a.download = 'fortigate-topology-full.png';
+        a.href = dataUrl;
+        a.click();
+      });
+    });
+  }
+
+  // ---------- data loading ----------
+  function loadCsvText(text, sourceLabel) {
+    try {
+      state.analysis = TopoCore.analyze(text);
+      render();
+      console.log('Loaded', sourceLabel, state.analysis);
+    } catch (err) {
+      alert('CSV 解析失敗: ' + err.message);
+      console.error(err);
+    }
+  }
+
+  function wireUp() {
+    var fileInput = document.getElementById('fileInput');
+    document.getElementById('btnLoad').onclick = function () { fileInput.click(); };
+    fileInput.onchange = function (e) {
+      var f = e.target.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () { loadCsvText(reader.result, f.name); };
+      reader.readAsText(f, 'utf-8');
+    };
+
+    document.getElementById('chkGw').onchange = function (e) { state.chkGw = e.target.checked; render(); };
+    document.getElementById('chkPhysics').onchange = function (e) { state.chkPhysics = e.target.checked; render(); };
+    document.getElementById('btnPng').onclick = exportFullPng;
+
+    // drag & drop anywhere on the page
+    var dz = document.getElementById('dropzone');
+    var dragDepth = 0;
+    window.addEventListener('dragenter', function (e) { e.preventDefault(); dragDepth++; dz.classList.add('active'); });
+    window.addEventListener('dragleave', function (e) { e.preventDefault(); dragDepth--; if (dragDepth <= 0) { dragDepth = 0; dz.classList.remove('active'); } });
+    window.addEventListener('dragover', function (e) { e.preventDefault(); });
+    window.addEventListener('drop', function (e) {
+      e.preventDefault(); dragDepth = 0; dz.classList.remove('active');
+      var f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () { loadCsvText(reader.result, f.name); };
+      reader.readAsText(f, 'utf-8');
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', wireUp);
+})();
+
+</script>
+</body>
+</html>

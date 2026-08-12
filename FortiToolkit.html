@@ -83,7 +83,12 @@
   footer { height: 26px; display: flex; align-items: center; padding: 0 12px; font-size: 12px;
     color: #6b7280; background: #fafafc; border-top: 1px solid #e3e5ea; flex: 0 0 auto; }
   #clibar { flex: 0 0 auto; border-top: 1px solid #e3e5ea; background: #fbfbfc;
-    display: flex; flex-direction: column; max-height: 42%; }
+    display: flex; flex-direction: column; max-height: 42%; position: relative; }
+  .clidrag { height: 7px; margin-top: -7px; cursor: ns-resize; background: transparent; }
+  .clidrag:hover, .clidrag.dragging { background: #cfe0f7; }
+  .clidrag::after { content: ''; display: block; width: 36px; height: 3px; margin: 2px auto 0;
+    border-radius: 2px; background: #cfd3db; }
+  .clidrag:hover::after, .clidrag.dragging::after { background: #7fa8e0; }
   .clihead { height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
     background: #f0f0f4; font-size: 12px; color: #46484d; }
   .clihead span { margin-right: auto; font-weight: 600; }
@@ -124,7 +129,7 @@
     border: 1px dashed #b0b4bc; }
   .topobasis { margin-top: 10px; padding: 8px 12px; background: #f7f8fa; border-radius: 6px;
     font-size: 12.5px; color: #46484d; font-family: Consolas, monospace; }
-  th.sorth { cursor: pointer; user-select: none; }
+  th.sorth { cursor: pointer; }
   th.sorth:hover { background: #e4e6ea; }
   th.sorth .arr { color: #3b73d6; font-size: 10px; }
   .typebar { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 12px; }
@@ -206,6 +211,7 @@
         <div class="panel" id="svc" style="display:none"></div>
         <div class="panel" id="topo" style="display:none"></div>
         <div id="clibar" style="display:none">
+          <div class="clidrag" id="clidrag" title="拖曳調整高度"></div>
           <div class="clihead">
             <span id="clilbl">CLI for the ticked rows</span>
             <button id="btnTickAll">Tick all</button>
@@ -372,6 +378,27 @@
 
   // ---------- parser ----------
   // Returns { objects:[{V,S,N,T,L,Sect}], header:[], vdomMode:bool }
+  // Matches FortiOS's own CLI echo line, e.g. "current vf=root:0" or
+  // "current vf=MGMT:1". FortiOS prints this itself whenever a `config vdom`
+  // / `edit <vdom>` transition happens interactively — see Fortinet's own
+  // documented example:
+  //   config vdom
+  //     edit vdomtest1
+  //     current vf=vdomtest1:4
+  // In that NORMAL case it's redundant (the preceding `edit` already sets the
+  // vdom correctly) and this regex simply won't fire anything new.
+  // The problem case this preprocessing step targets is tools (observed with
+  // a SolarWinds NCM backup) that capture a raw interactive CLI session
+  // instead of a clean `execute backup config` / `show full-configuration`
+  // export: they run `config global` + per-vdom commands and splice the
+  // terminal output together, so a bare "current vf=X:Y" line shows up at
+  // the TOP LEVEL (not nested under a real `config vdom`/`edit` pair) as the
+  // only clue that everything after it belongs to vdom X. Without handling
+  // it, whatever `curVdom` last happened to be (root, by default reset)
+  // silently "leaks" into the next vdom's section — e.g. a MGMT-vdom static
+  // route gets mislabeled as belonging to root.
+  var CURRENT_VF_RE = /^current vf=([^:]+):-?\d+\s*$/;
+
   function parseConfig(text) {
     var lines = text.split(/\r?\n/);
     var objects = [];
@@ -382,6 +409,15 @@
     var depth = 0, sawVdom = false;
     // multi-line value state (certificates, banners)
     var contKey = null, contVal = null, contObj = null;
+    // vdom names actually declared under `config vdom` — used to sanity-check
+    // any "current vf=" marker before trusting it (defends against the marker
+    // text coincidentally appearing somewhere it shouldn't, e.g. inside a
+    // banner/comment string being swallowed by the continuation-line logic).
+    var knownVdoms = {};
+    // every top-level "current vf=" marker actually used to fix up curVdom,
+    // surfaced back to the caller for transparency (so the UI/tests can show
+    // "this file looks like a captured CLI session, not a clean export").
+    var vfMarkersApplied = [];
 
     for (var i = 0; i < lines.length; i++) {
       var rawLine = lines[i];
@@ -399,6 +435,18 @@
 
       if (line.length === 0) continue;
       var c0 = line[0];
+
+      // --- non-standard CLI-echo marker (see CURRENT_VF_RE comment above) ---
+      if (c0 === 'c' && line.length > 11 && line.substring(0, 11) === 'current vf=') {
+        var vfMatch = CURRENT_VF_RE.exec(line);
+        if (vfMatch && depth === 0 && knownVdoms.hasOwnProperty(vfMatch[1])) {
+          if (curVdom !== vfMatch[1]) {
+            vfMarkersApplied.push({ vdom: vfMatch[1], line: i + 1, previousVdom: curVdom });
+          }
+          curVdom = vfMatch[1];
+        }
+        continue; // never a real config directive either way — always skip
+      }
 
       if (c0 === 's' && line.length > 4 && line.substring(0, 4) === 'set ') {
         var rest = line.substring(4);
@@ -423,7 +471,7 @@
 
       if (c0 === 'e' && line.length > 5 && line.substring(0, 5) === 'edit ') {
         var name = stripQuotes(line.substring(5).trim());
-        if (curSeg === 'vdom' && depth === 1) curVdom = name;
+        if (curSeg === 'vdom' && depth === 1) { curVdom = name; knownVdoms[name] = true; }
         curObj = { V: curVdom, S: curPath, N: name, T: {}, L: i + 1, Sect: false };
         continue;
       }
@@ -460,7 +508,7 @@
     for (var key in sectObjs) if (sectObjs.hasOwnProperty(key)) objects.push(sectObjs[key]);
     var truncated = stack.length > 0; // block never closed = truncated file
     return { objects: objects, header: header, vdomMode: sawVdom,
-             truncated: truncated, lines: lines };
+             truncated: truncated, lines: lines, vfMarkersApplied: vfMarkersApplied };
   }
 
   function sectAt(sectObjs, vdom, path, i) {
@@ -592,6 +640,11 @@
   // ---------- network model: routing (static + connected) ----------
   function buildRoutes(parsed) {
     var routes = [];
+    // zone lookup is "vdom|interface" -> zone name (same map buildInterfaces uses),
+    // built once per call rather than per-route since it never changes mid-config.
+    // NOTE: zoneMap() is defined further below in this file but function
+    // declarations are hoisted, so calling it here is safe.
+    var zm = zoneMap(parsed);
     parsed.objects.forEach(function (o) {
       var t = o.T;
       // static routes
@@ -600,9 +653,13 @@
         if (!dst) dst = stripQuotes(t['dstaddr'] || '') || '0.0.0.0/0';
         var gw = stripQuotes(t['gateway'] || '');
         if (stripQuotes(t['blackhole'] || '') === 'enable') gw = '(blackhole)';
+        var dev = stripQuotes(t['device'] || '');
         routes.push({
           V: o.V, Src: 'static', Seq: o.N, Dst: dst, Gw: gw,
-          sortKey: routeSortKey(dst), Dev: stripQuotes(t['device'] || ''),
+          sortKey: routeSortKey(dst), Dev: dev,
+          // most interfaces are NOT in a zone; '' (shown as '—' in the UI) is the
+          // normal case, not a missing-data problem — do not treat it as a bug
+          Zone: zm[o.V + '|' + dev] || '',
           Dist: stripQuotes(t['distance'] || '10'), Pri: stripQuotes(t['priority'] || ''),
           Status: stripQuotes(t['status'] || 'enable'),
           Cmt: stripQuotes(t['comment'] || ''), L: o.L
@@ -624,7 +681,12 @@
         var cmt = stripQuotes(t['alias'] || '') || stripQuotes(t['description'] || '');
         routes.push({
           V: ivd, Src: 'connected', Seq: '', Dst: net, Gw: '',
-          sortKey: routeSortKey(net), Dev: o.N, Dist: '0', Pri: '',
+          sortKey: routeSortKey(net), Dev: o.N,
+          // same double-fallback buildInterfaces uses: the interface's assigned
+          // vdom first, then its own object scope (zones are defined per-vdom,
+          // same as interfaces, so this mirrors that lookup exactly)
+          Zone: zm[ivd + '|' + o.N] || zm[o.V + '|' + o.N] || '',
+          Dist: '0', Pri: '',
           Status: st || 'up', Cmt: cmt, L: o.L
         });
       }
@@ -1075,7 +1137,7 @@
         var ip = ipOnly(cidr);
         if (ip === '0.0.0.0') return;
         if (stripQuotes(t['status'] || '') === 'down') return;
-        var net = connectedNet(cidr), pfx = prefixOf(cidr);
+        var net = connectedNet(cidr), pfx = prefixOf(cidr); // net already carries "/pfx"
         // VDOM assignment: interface lives under config global with 'set vdom';
         // fall back to the object's own vdom scope. VDOMs are isolated routing
         // domains, so the same private subnet in two vdoms is NOT the same segment.
@@ -1084,7 +1146,7 @@
                     prefix: pfx, vdom: vdom, L: o.L };
         list.push(rec);
         (ipIndex[ip] || (ipIndex[ip] = [])).push(rec);
-        var key = net + '/' + pfx;
+        var key = net; // do NOT append '/' + pfx again — net already is "ip/prefix" (was: "x/24/24")
         (netIndex[key] || (netIndex[key] = [])).push(rec);
       });
       ifByDev[d.label] = list;
@@ -1216,7 +1278,7 @@
         if (!gw || gw === '0.0.0.0') return;
         (ipIndex[gw] || []).forEach(function (h) {
           if (h.dev === d.label) return;                 // next-hop is our own interface
-          var segId = 'net:' + h.net + '/' + h.prefix;
+          var segId = 'net:' + h.net; // h.net already is "ip/prefix"
           if (!segIndex[segId]) return;                  // segment not drawn (e.g. loopback)
           if (linkedSet[d.label + '|' + segId]) return;  // already attached — leave it
           var kk = d.label + '|' + segId;
@@ -1224,7 +1286,7 @@
           gwDrawn[kk] = true;
           addEdge(d.label, segId, 'gateway', 'high',
             'static route via ' + gw + ' → ' + h.dev + '/' + h.vdom + ':' + h.name +
-            ' on ' + h.net + '/' + h.prefix, true);
+            ' on ' + h.net, true);
         });
       });
     });
@@ -1457,14 +1519,16 @@
               row:function(r){ return [r.V, r.Kind, r.N, r.Val, r.Why, r.L]; } },
       dup:  { headers:['vdom','Category','Value','Count','Keep','Drop','Line'],
               row:function(r){ return [r.V, r.Cat, r.K, r.Cnt, r.Keep, r.Drop, r.L]; } },
-      routes:{ headers:['vdom','Source','Seq','Destination','Gateway','Device','Dist','Status','Comment','Line'],
-              row:function(r){ return [r.V, r.Src, r.Seq, r.Dst, r.Gw, r.Dev, r.Dist, r.Status, r.Cmt, r.L]; } }
+      routes:{ headers:['vdom','Source','Seq','Destination','Gateway','Interface','Zone','Dist','Status','Comment','Line'],
+              row:function(r){ return [r.V, r.Src, r.Seq, r.Dst, r.Gw, r.Dev, r.Zone, r.Dist, r.Status, r.Cmt, r.L]; } }
     };
     var spec = specs[tab];
     if (!spec) return null;
     if (multiDevice) {
+      // r._dev is the loaded-device tag (see ui.js addDevice()); kept distinct from
+      // r.Dev, which for routes is the egress interface — the two used to collide.
       return { headers: ['device'].concat(spec.headers),
-               row: function (r){ return [r.Dev].concat(spec.row(r)); } };
+               row: function (r){ return [r._dev].concat(spec.row(r)); } };
     }
     return spec;
   }
@@ -1494,7 +1558,7 @@
   'use strict';
   var Core = window.FortiCore;
   var DEVICES = [];     // one analysis per loaded file
-  var A = null;         // merged view across all devices (records tagged with .Dev)
+  var A = null;         // merged view across all devices (records tagged with ._dev)
   var curDev = '*';     // selected device label, or '*' for all
   var curV = '*';       // selected vdom filter, or '*' for all
   var curTab = 'ov';
@@ -1675,12 +1739,15 @@
     var info = Core.deviceInfo(parsed);
     var label = uniqueLabel(info.label || fileName || ('device ' + (DEVICES.length + 1)));
 
-    // tag every record with its device label + a globally-unique id
-    comp.forEach(function (r){ r.Dev = label; r._id = uidSeq++; });
-    clean.safe.forEach(function (r){ r.Dev = label; r._id = uidSeq++; });
-    clean.held.forEach(function (r){ r.Dev = label; });
-    dups.forEach(function (r){ r.Dev = label; r._id = uidSeq++; });
-    routes.forEach(function (r){ r.Dev = label; });
+    // tag every record with its device label (as _dev, kept distinct from any
+    // pre-existing domain field — routes.Dev from core.js is the egress interface,
+    // and used to get silently overwritten here when this loop wrote r.Dev = label)
+    // + a globally-unique id
+    comp.forEach(function (r){ r._dev = label; r._id = uidSeq++; });
+    clean.safe.forEach(function (r){ r._dev = label; r._id = uidSeq++; });
+    clean.held.forEach(function (r){ r._dev = label; });
+    dups.forEach(function (r){ r._dev = label; r._id = uidSeq++; });
+    routes.forEach(function (r){ r._dev = label; });
 
     DEVICES.push({ label:label, info:info, parsed:parsed, comp:comp, clean:clean,
                    dups:dups, routes:routes, fileName:fileName, ms:(t1 - t0),
@@ -1692,12 +1759,27 @@
     buildTree();
     renderAll();
     var warn = parsed.truncated ? '  ⚠ file looks truncated (a config block never closed)' : '';
+    // "current vf=X:Y" is FortiOS's own CLI echo when a vdom transition
+    // happens interactively — it should never appear at the top level of a
+    // clean `execute backup config` / `show full-configuration` export.
+    // Seeing it there means this file is more likely a captured interactive
+    // CLI session (e.g. a SolarWinds NCM-style backup that runs per-vdom
+    // commands over SSH and splices the terminal output together) rather
+    // than a proper config export. The parser auto-corrects the vdom
+    // boundary using these markers, but flags it here so the user knows to
+    // double-check, and ideally re-export via a clean method next time.
+    if (parsed.vfMarkersApplied && parsed.vfMarkersApplied.length) {
+      warn += '  ⚠ ' + parsed.vfMarkersApplied.length + ' non-standard "current vf=" marker(s) detected — ' +
+        'this looks like a captured CLI session (e.g. SolarWinds-style backup) rather than a clean config export; ' +
+        'vdom boundaries were auto-corrected using these markers, but a clean `execute backup config` / ' +
+        '`show full-configuration` export is more reliable';
+    }
     setStatus('Loaded ' + fileName + ' as "' + label + '" — ' + parsed.objects.length +
               ' objects in ' + (t1 - t0).toFixed(0) + ' ms · ' + DEVICES.length + ' device(s) total' + warn);
     show('workspace');
   }
 
-  // merge all devices into one view; records keep their .Dev tag and unique _id
+  // merge all devices into one view; records keep their ._dev tag and unique _id
   function rebuildView() {
     var comp = [], safe = [], held = [], dups = [], routes = [];
     var anyVdom = false, objTotal = 0;
@@ -1790,15 +1872,15 @@
   }
   // a record shows when its device AND its vdom match the current filter.
   // Used for the MERGED data tabs (compliance/safe/dup/routes) whose records
-  // are tagged with .Dev during addDevice().
+  // are tagged with ._dev during addDevice().
   function matchRow(r) {
-    if (curDev !== '*' && r.Dev !== curDev) return false;
+    if (curDev !== '*' && r._dev !== curDev) return false;
     if (curV !== '*' && r.V !== curV) return false;
     return true;
   }
   // Vdom-only filter for the NETWORK topology tabs (interfaces/vpn/services).
   // Their records come fresh from Core.build*(curParsed()) and are already scoped
-  // to one device, so they carry no .Dev tag — filtering by device would wrongly
+  // to one device, so they carry no ._dev tag — filtering by device would wrongly
   // drop everything (this was the "Interfaces tab went blank" regression).
   function matchVdom(r) {
     return curV === '*' || r.V === curV;
@@ -1830,19 +1912,32 @@
   function devicePanel() {
     var dvc = curDevice();
     if (!dvc) {
-      // merged view across multiple devices: a compact card per device
-      var cards = DEVICES.map(function (D){
+      // merged view across multiple devices: one sortable row per device.
+      // Was a flex of unsortable cards — fine for 2-3 devices, but with 8+ (as
+      // in a real multi-site load) a table scans faster and, critically, lets
+      // you click "Findings" to sort and triage the worst device first instead
+      // of eyeballing a wall of cards. Reuses the existing sortable table()
+      // helper, so header-click sorting and row click-to-focus (both delegated
+      // on document.body / #ov already) work with no new wiring.
+      var head = ['Device', 'Model', 'Firmware', 'VDOM mode', 'Findings', 'Objects'];
+      var rowMeta = [];
+      var body = DEVICES.map(function (D){
         var fails = D.comp.filter(function (r){ return !r.Pass && !r.Skip; }).length;
         var i = D.info;
-        return '<div class="cardbox" style="cursor:pointer" data-dev="' + esc(D.label) + '">' +
-          '<div class="cardt" style="font-weight:700;font-size:14px">' + esc(D.label) + '</div>' +
-          '<div class="cards2">' + esc(i.model || '') + (i.firmware ? ' · v' + esc(i.firmware) : '') +
-          ' · ' + (i.vdomMode) + '</div>' +
-          '<div class="cards2">' + fails + ' finding(s) · ' + D.parsed.objects.length + ' objects</div>' +
-          '</div>';
-      }).join('');
-      return '<div class="devpanel"><div class="devpanel-h">' + DEVICES.length +
-        ' devices</div><div class="cards" id="devcards">' + cards + '</div></div>';
+        var vdomCount = 0;
+        if (D.parsed.vdomMode) {
+          var vd = {};
+          D.parsed.objects.forEach(function (o){ vd[o.V] = true; });
+          vdomCount = Object.keys(vd).length;
+        }
+        rowMeta.push({ dev: D.label, line: 0 }); // no source line for a summary row; click focuses the device instead
+        return [esc(D.label), esc(i.model || '—'), i.firmware ? 'v' + esc(i.firmware) : '—',
+                i.vdomMode + (vdomCount ? ' · ' + vdomCount + ' vdom(s)' : ''),
+                fails, D.parsed.objects.length];
+      });
+      return '<div class="devpanel"><div class="devpanel-h">' + DEVICES.length + ' devices</div>' +
+        table(head, body, 'Click a row to focus that device. Click a column header to sort — e.g. Findings, to triage the worst device first.', rowMeta) +
+        '</div>';
     }
     var d = dvc.info;
     var vd = {}; dvc.parsed.objects.forEach(function (o){ vd[o.V] = (vd[o.V]||0)+1; });
@@ -1985,16 +2080,26 @@
 
   function renderRoutes() {
     var rows = A.routes.filter(function (r){ return matchRow(r); });
-    var head = ['vdom','Source','Seq','Destination','Gateway','Device','Dist','Status','Comment','Line'];
+    // 'Interface' is r.Dev (egress interface, from core.js buildRoutes) — this used
+    // to be mislabelled "Device" and, worse, get silently overwritten by the per-
+    // device tag when multiple configs were loaded. 'Host' (r._dev) is the loaded
+    // device's hostname/label, shown only when there's more than one to tell apart.
+    var multi = DEVICES.length > 1;
+    var head = (multi ? ['Host'] : []).concat(
+      ['vdom','Source','Seq','Destination','Gateway','Interface','Zone','Dist','Status','Comment','Line']);
     var body = rows.map(function (r){
       var src = r.Src==='connected'
         ? '<span class="pill" style="background:#e3f2fd;color:#1565c0">connected</span>'
         : '<span class="pill" style="background:#f3e5f5;color:#6a1b9a">static</span>';
-      return [esc(r.V), src, r.Seq, esc(r.Dst), esc(r.Gw), esc(r.Dev),
-              r.Dist, esc(r.Status), esc(r.Cmt), r.L];
+      // most interfaces aren't in a zone at all — show '—' rather than a blank
+      // cell so it reads as "no zone" and not "data missing"
+      var row = [esc(r.V), src, r.Seq, esc(r.Dst), esc(r.Gw), esc(r.Dev), esc(r.Zone || '—'),
+                 r.Dist, esc(r.Status), esc(r.Cmt), r.L];
+      if (multi) row.unshift(esc(r._dev));
+      return row;
     });
     document.getElementById('routes').innerHTML = table(head, body,
-      'Static plus connected routes. Connected routes are derived from interface IPs (line points to the interface); DHCP/PPPoE, IPv6 and down interfaces are omitted.',
+      'Static plus connected routes. Connected routes are derived from interface IPs (line points to the interface); DHCP/PPPoE, IPv6 and down interfaces are omitted. Zone is the interface\'s system zone membership, if any.',
       metaOf(rows, 'L'));
     document.getElementById('tabRoutes').textContent = 'Routing (' + rows.length + ')';
   }
@@ -2228,7 +2333,7 @@
     (topo.segments || []).forEach(function (s){
       var p = nodeXY(s.id); if (!p) return;
       var hw = SEG_W/2, hh = SEG_H/2;
-      var label = s.net.replace(/\/(\d+)\/\1$/, '/$1'); // collapse "x/24/24" display artefact
+      var label = s.net; // s.net is already "ip/prefix"; no display patch needed once the source key is fixed
       var fill = s.multiVdom ? '#fff8e1' : '#eaf5ea';
       var stroke = s.multiVdom ? '#f9a825' : '#2e7d32';
       var sub = (s.deviceCount > 1 ? s.deviceCount + ' devices' : '') +
@@ -2442,7 +2547,7 @@
 
   // build the per-row {dev, line} tags parallel to a rows array
   function metaOf(rows, lineField) {
-    return rows.map(function (r){ return { dev: r.Dev, line: r[lineField] }; });
+    return rows.map(function (r){ return { dev: r._dev, line: r[lineField] }; });
   }
   // rowMeta (optional) is parallel to body: each entry {dev, line} tags the <tr>
   // so a double-click can resolve BOTH the source device and the config line,
@@ -2506,15 +2611,31 @@
       var p = JSON.parse(localStorage.getItem('fortitoolkit.prefs') || '{}');
       document.getElementById('chkPass').checked = !!p.showPass;
       document.getElementById('chkCross').checked = !!p.cross;
+      // remembered CLI panel height (px) — a UI preference, not analysis state
+      if (p.clibarHeight) {
+        var bar0 = document.getElementById('clibar');
+        bar0.style.maxHeight = 'none';
+        bar0.style.height = clampClibarHeight(p.clibarHeight) + 'px';
+      }
     } catch (e) {}
   }
   function savePrefs() {
     try {
+      var bar = document.getElementById('clibar');
+      var h = bar && bar.style.height ? parseInt(bar.style.height, 10) : undefined;
       localStorage.setItem('fortitoolkit.prefs', JSON.stringify({
         showPass: document.getElementById('chkPass').checked,
-        cross: document.getElementById('chkCross').checked
+        cross: document.getElementById('chkCross').checked,
+        clibarHeight: h || undefined
       }));
     } catch (e) {}
+  }
+  // keep the dragged height sane across window resizes: at least the textarea's
+  // own min-height, at most leaving room for the tab bar above it
+  function clampClibarHeight(h) {
+    var main = document.querySelector('main');
+    var maxH = main ? Math.max(160, main.clientHeight - 80) : 700;
+    return Math.max(150, Math.min(maxH, h));
   }
 
   // ---------- wire up ----------
@@ -2619,6 +2740,33 @@
         if (wrap) wrap.classList.remove('grabbing');
       });
     })();
+    // drag the handle above the CLI panel to resize it; height is remembered
+    // per-browser (a UI preference, same bucket as "show passing" / "compare vdoms")
+    (function () {
+      var handle = document.getElementById('clidrag');
+      var bar = document.getElementById('clibar');
+      if (!handle || !bar) return;
+      var dragging = false, startY = 0, startH = 0;
+      handle.addEventListener('mousedown', function (e) {
+        dragging = true; startY = e.clientY; startH = bar.getBoundingClientRect().height;
+        bar.style.maxHeight = 'none';   // dragging overrides the default 42% cap
+        handle.classList.add('dragging');
+        document.body.style.cursor = 'ns-resize';
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', function (e) {
+        if (!dragging) return;
+        var dy = startY - e.clientY;    // mouse up => taller CLI panel
+        bar.style.height = clampClibarHeight(startH + dy) + 'px';
+      });
+      window.addEventListener('mouseup', function () {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        savePrefs();
+      });
+    })();
     TABS.forEach(function (t){
       document.getElementById('tab_'+t).onclick = function(){ switchTab(t); };
     });
@@ -2708,3 +2856,4 @@
 </script>
 </body>
 </html>
+
