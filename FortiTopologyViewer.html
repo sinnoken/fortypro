@@ -1711,6 +1711,82 @@
   }
 
   // ---------- PNG export: the WHOLE graph, not just the current viewport ----------
+  //
+  // BUG FIXED HERE: the previous version capped the export canvas at a
+  // hardcoded 8000px guess and otherwise trusted the browser to render
+  // whatever size was requested. In practice, many browsers/GPUs silently
+  // clip a <canvas> element once it exceeds THEIR OWN maximum supported
+  // dimension — no error is thrown, drawing calls beyond that size simply
+  // don't paint, and canvas.toDataURL() only reflects the actually-backed
+  // pixels. This is especially common in virtualized/remote-desktop/jump-
+  // host environments (software rendering, older/basic GPU adapters) —
+  // exactly the kind of environment this tool's own CLAUDE.md notes FortiOS
+  // configs are typically reviewed from. Two real exports from this tool
+  // both came back cropped at EXACTLY 2048px tall, which is the signature
+  // of a hard per-dimension canvas cap, not a coincidence.
+  //
+  // Fix: detect the browser's REAL max canvas dimension at runtime (see
+  // detectMaxCanvasDimension), then if the graph's natural size exceeds it,
+  // scale the WHOLE export down (both the canvas size and vis-network's
+  // camera zoom, together, so the same content still fits) rather than
+  // silently cropping. This trades resolution for completeness — the
+  // correct fail-safe direction: a smaller-but-complete image beats a
+  // larger-but-cropped one. The downscale (when it happens) is disclosed
+  // via the status line, not hidden.
+
+  var _maxCanvasDim = null;
+  // Probe the actual maximum single-dimension size this browser/GPU can
+  // back a <canvas> with, by trying decreasing candidate sizes and
+  // confirming a pixel drawn at the FAR CORNER actually made it into the
+  // backing store (read back via getImageData). A silently-clipped canvas
+  // still "exists" and has the requested .width/.height properties — the
+  // clipping only shows up when you try to read pixels beyond wherever the
+  // real limit was, which is exactly what this probe checks for. Result is
+  // cached for the page's lifetime (the limit is a hardware/browser
+  // property, it cannot change between calls in the same session).
+  function detectMaxCanvasDimension() {
+    if (_maxCanvasDim) return _maxCanvasDim;
+    var candidates = [16384, 8192, 4096, 2048, 1024];
+    for (var i = 0; i < candidates.length; i++) {
+      var size = candidates[i];
+      try {
+        var c = document.createElement('canvas');
+        c.width = size; c.height = size;
+        var ctx = c.getContext('2d');
+        if (!ctx) continue;
+        ctx.fillStyle = 'rgb(18,52,86)'; // an arbitrary, easily-distinguished-from-blank color
+        ctx.fillRect(size - 1, size - 1, 1, 1);
+        var data = ctx.getImageData(size - 1, size - 1, 1, 1).data;
+        if (data[0] === 18 && data[1] === 52 && data[2] === 86) {
+          _maxCanvasDim = size;
+          return size;
+        }
+      } catch (e) {
+        // getImageData/getContext can throw outright on some browsers for
+        // an oversized canvas request — treat that exactly like "this size
+        // isn't supported" and fall through to try the next, smaller candidate
+      }
+    }
+    _maxCanvasDim = 1024; // ultra-conservative floor if every candidate failed
+    return _maxCanvasDim;
+  }
+
+  // Pure math (no DOM) so this is independently testable under node — given
+  // the graph's natural pixel size and the browser's real max dimension,
+  // decide the actual export size and the vis-network camera scale needed
+  // to fit the SAME content into it. Returns scaleFactor=1 (no change) when
+  // the natural size already fits.
+  function computeExportSizing(naturalWidth, naturalHeight, maxDim) {
+    var largest = Math.max(naturalWidth, naturalHeight, 1);
+    var scaleFactor = Math.min(1, maxDim / largest);
+    return {
+      width: Math.max(1, Math.round(naturalWidth * scaleFactor)),
+      height: Math.max(1, Math.round(naturalHeight * scaleFactor)),
+      scaleFactor: scaleFactor,
+      wasDownscaled: scaleFactor < 1
+    };
+  }
+
   function exportFullPng() {
     if (!state.network) { alert('尚未載入資料'); return; }
     var net = state.network;
@@ -1730,8 +1806,16 @@
     var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
 
     var MARGIN = 220;
-    var width = Math.min(Math.max(maxX - minX + MARGIN * 2, 500), 8000);
-    var height = Math.min(Math.max(maxY - minY + MARGIN * 2, 400), 8000);
+    // Natural size is only bounded by an absurd sanity ceiling (guards
+    // against a data bug producing a runaway allocation request) — NOT by
+    // a guessed browser limit anymore; that guessing is exactly what caused
+    // the cropping bug.
+    var naturalWidth = Math.min(Math.max(maxX - minX + MARGIN * 2, 500), 60000);
+    var naturalHeight = Math.min(Math.max(maxY - minY + MARGIN * 2, 400), 60000);
+
+    var maxDim = detectMaxCanvasDimension();
+    var sizing = computeExportSizing(naturalWidth, naturalHeight, maxDim);
+    var width = sizing.width, height = sizing.height;
 
     var savedStyle = container.style.cssText;
     var savedView = { position: net.getViewPosition(), scale: net.getScale() };
@@ -1740,8 +1824,18 @@
       width + 'px; height:' + height + 'px; background:#ffffff; z-index:-1;';
 
     net.setSize(width + 'px', height + 'px');
-    net.moveTo({ position: { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }, scale: 1, animation: false });
+    // scale here is vis-network's camera zoom (world-units per pixel).
+    // At scaleFactor=1 (fits natively) this is the same 1:1 behavior as
+    // before. When downscaled, the SAME world-space bounding box now maps
+    // onto a smaller pixel canvas, so the camera must zoom out by the same
+    // factor to keep the whole graph in frame instead of cropping it.
+    net.moveTo({ position: { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }, scale: sizing.scaleFactor, animation: false });
     net.redraw();
+
+    if (sizing.wasDownscaled) {
+      setLayoutStatus('⚠ 圖形尺寸超過瀏覽器 canvas 上限(偵測到 ' + maxDim + 'px),' +
+        '已縮小至 ' + width + '×' + height + ' 匯出以確保完整全圖(不裁切,解析度較低)');
+    }
 
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
@@ -1814,3 +1908,4 @@
 </script>
 </body>
 </html>
+
