@@ -195,6 +195,40 @@
   .polvdompart { display: inline-block; padding: 0 4px; border-radius: 3px; font-weight: 900;
     color: #0b2e66; background: #fbfdff; box-shadow: inset 0 0 0 1px rgba(36,65,122,0.35); }
   .polcombo-item-sel .polvdompart { background: #ffffff; }
+  /* Per user request ("Source Destination 既有物件 資料結構上是多選
+     ...實際上的use case可能是輸入CIDR清單"): the multi-CIDR-paste
+     picker's own paste box + resolved-chip list, styled to sit visually
+     "above" the existing single-object search combobox it now
+     supplements rather than replaces. */
+  .cidrpastewrap { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
+  .cidrpaste { flex: 1 1 auto; min-width: 260px; padding: 6px 8px; border: 1px solid #cfd3db;
+    border-radius: 5px; font-size: 12.5px; font-family: Consolas, monospace; resize: vertical; }
+  .cidrpaste:focus { border-color: #3b73d6; outline: none; }
+  .cidrparsebtn { flex: 0 0 auto; padding: 6px 12px; border: 1px solid #3b73d6; background: #3b73d6;
+    color: #fff; border-radius: 5px; font-size: 12.5px; font-weight: 600; cursor: pointer; align-self: stretch; }
+  .cidrparsebtn:hover { background: #2f5cb0; }
+  .cidritems { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .cidritem { border: 1px solid #d8dbe1; border-radius: 6px; padding: 6px 9px; font-size: 12.5px; background: #fff; }
+  .cidritem code { font-family: Consolas, monospace; font-weight: 600; color: #24272e; }
+  .cidrx { border: none; background: transparent; color: #9aa0ab; cursor: pointer; font-size: 12px;
+    float: right; padding: 0 3px; }
+  .cidrx:hover { color: #c0392b; }
+  .cidribadge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11.5px;
+    font-weight: 600; margin-left: 6px; }
+  .cidr-exact .cidribadge, .cidritem-exact .cidribadge { background: #e3f6e8; color: #1e7e34; }
+  .cidr-notFound .cidribadge, .cidritem-notFound .cidribadge { background: #eef1f5; color: #5a6070; }
+  .cidr-exactMulti .cidribadge, .cidritem-exactMulti .cidribadge,
+  .cidr-subsetOfExisting .cidribadge, .cidritem-subsetOfExisting .cidribadge { background: #fff4e0; color: #a15c00; }
+  .cidr-supersetOfExisting .cidribadge, .cidritem-supersetOfExisting .cidribadge { background: #e6eefc; color: #1b4bab; }
+  .cidr-overlap .cidribadge, .cidritem-overlap .cidribadge,
+  .cidr-invalid .cidribadge, .cidritem-invalid .cidribadge { background: #fdeceb; color: #a13d1f; }
+  .cidrdetail { margin-top: 5px; padding-top: 5px; border-top: 1px dashed #e6e8ec;
+    display: flex; flex-direction: column; gap: 3px; }
+  .cidrmatch { cursor: pointer; font-weight: 400; }
+  .cidrmatch i { color: #9aa0ab; font-style: italic; }
+  .cidrminibtn { align-self: flex-start; padding: 2px 9px; font-size: 11.5px; border: 1px solid #9db8e6;
+    background: #eef3fb; color: #1b4bab; border-radius: 10px; cursor: pointer; }
+  .cidrminibtn:hover { background: #dde9fb; }
   th.sorth:hover { background: #e4e6ea; }
   th.sorth .arr { color: #3b73d6; font-size: 10px; }
   .typebar { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 12px; }
@@ -1617,6 +1651,62 @@
     return (netInt & maskInt) === (ipInt & maskInt);
   }
 
+  // Per user request ("Source Destination 既有物件 資料結構上是多選"):
+  // turns a CIDR string into its {start,end} 32-bit integer range so a
+  // pasted CIDR/IP can be compared against every existing address
+  // object's OWN range — not just matched by exact string equality,
+  // which would miss the very common real-world case of a pasted CIDR
+  // that's actually a SUB-network or SUPER-network of something that
+  // already exists (see classifyCidrRelation just below). A bare IP with
+  // no "/bits" (e.g. "192.168.1.5") is treated as a single host (/32),
+  // matching addressFieldsAndKey's own existing convention for the same
+  // case. Returns null for anything that isn't a parseable IPv4 CIDR —
+  // callers treat that as "can't be resolved, flag as invalid" rather
+  // than guessing.
+  function cidrRange(cidr) {
+    var s = String(cidr || '').trim();
+    if (!s) return null;
+    var slash = s.indexOf('/');
+    var ipPart = slash < 0 ? s : s.substring(0, slash);
+    var netParts = ipv4Parts(ipPart);
+    if (!netParts) return null;
+    var bits = slash < 0 ? 32 : parseInt(s.substring(slash + 1), 10);
+    if (isNaN(bits) || bits < 0 || bits > 32) return null;
+    var netInt = ipv4ToInt(netParts);
+    var maskInt = bits === 0 ? 0 : ((0xFFFFFFFF << (32 - bits)) >>> 0);
+    var start = (netInt & maskInt) >>> 0;
+    var hostBits = 32 - bits;
+    var size = hostBits >= 32 ? 0xFFFFFFFF : (Math.pow(2, hostBits) - 1);
+    var end = (start + size) >>> 0;
+    return { start: start, end: end, bits: bits };
+  }
+
+  // Classifies how a PASTED input range (`a`) relates to one EXISTING
+  // object's own range (`b`) — this is the actual containment/overlap
+  // engine behind the multi-CIDR-paste picker in ui.js. Four distinct,
+  // deliberately-never-conflated outcomes (see that UI's own big comment
+  // for the full reasoning on why each one needs a DIFFERENT UI
+  // treatment — only 'equal' is ever safe to auto-select):
+  //   'equal'                  — a and b are the exact same range
+  //   'inputSubsetOfExisting'  — a is entirely INSIDE b (b is the larger,
+  //                              already-defined network; picking it
+  //                              would WIDEN scope beyond what was typed)
+  //   'inputSupersetOfExisting'— b is entirely INSIDE a (the pasted
+  //                              value covers this one existing object,
+  //                              possibly among several others)
+  //   'overlap'                — neither contains the other, but they
+  //                              share at least one address (genuinely
+  //                              ambiguous — never auto-resolved)
+  // Returns null if either range is missing/malformed.
+  function classifyCidrRelation(a, b) {
+    if (!a || !b) return null;
+    if (a.start === b.start && a.end === b.end) return 'equal';
+    if (a.start >= b.start && a.end <= b.end) return 'inputSubsetOfExisting';
+    if (b.start >= a.start && b.end <= a.end) return 'inputSupersetOfExisting';
+    if (a.start <= b.end && b.start <= a.end) return 'overlap';
+    return 'none';
+  }
+
   // every real, currently-connected (per buildRoutes' own exclusion
   // rules) interface network in one vdom, as {iface, net} pairs.
   function connectedNetworksForVdom(parsed, vdom) {
@@ -1925,6 +2015,32 @@
       var srcParsed = allDevicesByLabel[ref.sourceDevice];
       if (!srcParsed) return null;
       return representativeIpsForRefOnDevice(srcParsed, ref.sourceVdom, ref.section, ref.name, {});
+    }
+    // Per user request ("Source Destination 既有物件 資料結構上是多選"):
+    // a 'multi' ref is a Source/Destination made of SEVERAL individual
+    // picks (existing objects and/or newly-typed CIDRs) rather than one
+    // single reference — see ui.js's multi-CIDR-paste picker. Interface
+    // auto-inference must find ONE interface/zone that's correct for
+    // EVERY pick in the group at once (never just the first one), so
+    // this returns the UNION of every item's own representative IPs;
+    // inferInterfaceForIps already requires all of them to agree on a
+    // single unambiguous interface, which is exactly the right
+    // (conservative) behavior for a multi-address group.
+    if (ref.mode === 'multi') {
+      var allIps = [];
+      (ref.items || []).forEach(function (it) {
+        var ips;
+        if (it.kind === 'new') {
+          if (!it.fieldsAndKey || !it.fieldsAndKey.T) return;
+          ips = representativeIpsForAddress({ T: it.fieldsAndKey.T });
+        } else if (it.kind === 'existing') {
+          var p = allDevicesByLabel[it.sourceDevice];
+          if (!p) return;
+          ips = representativeIpsForRefOnDevice(p, it.sourceVdom, it.section, it.name, {});
+        }
+        if (ips) allIps = allIps.concat(ips);
+      });
+      return allIps.length ? allIps : null;
     }
     return null;
   }
@@ -2300,6 +2416,44 @@
         allCreates = allCreates.concat(r2.creates);
         return { ok: true, name: r2.finalName };
       }
+      // Per user request ("Source Destination 既有物件 資料結構上是多選"):
+      // a 'multi' ref represents Source/Destination as SEVERAL individual
+      // picks — each either an existing object (possibly from a DIFFERENT
+      // device than this target, resolved via resolveExistingRef exactly
+      // like the singular 'existing' case above) or a brand-new value the
+      // multi-CIDR picker decided to create (resolved via resolveNewRef,
+      // exactly like the singular 'new' case above) — see ui.js's
+      // refFromField for how policyState.src/dst.items becomes this
+      // shape. Every item must resolve successfully for the WHOLE target
+      // to succeed (same "never partially apply" contract as the rest of
+      // this function); names are deduplicated since two different picks
+      // could legitimately resolve to the very same target-device object
+      // (e.g. two pasted CIDRs matching the same existing supernet).
+      if (ref.mode === 'multi') {
+        var multiNames = [];
+        var items2 = ref.items || [];
+        for (var mi = 0; mi < items2.length; mi++) {
+          var it2 = items2[mi];
+          if (it2.kind === 'existing') {
+            var srcParsed2 = allDevicesByLabel[it2.sourceDevice];
+            if (!srcParsed2) return { ok: false, reason: '找不到來源裝置 "' + it2.sourceDevice + '"' };
+            var rr = resolveExistingRef(tp, tv, it2.section, it2.name, srcParsed2, it2.sourceVdom, {});
+            if (!rr.ok) return rr;
+            allCreates = allCreates.concat(rr.creates);
+            multiNames.push(it2.name);
+          } else if (it2.kind === 'new') {
+            var built2 = it2.fieldsAndKey;
+            var rr2 = resolveNewRef(tp, tv, it2.section || sectionForNew, it2.name, built2.key, function () { return built2.T; });
+            if (!rr2.ok) return rr2;
+            allCreates = allCreates.concat(rr2.creates);
+            multiNames.push(rr2.finalName);
+          } else {
+            return { ok: false, reason: '未知的多選項目類型: ' + it2.kind };
+          }
+        }
+        if (!multiNames.length) return { ok: false, reason: '尚未選擇任何物件' };
+        return { ok: true, name: Array.from(new Set(multiNames)) };
+      }
       return { ok: false, reason: '未知的參照模式: ' + ref.mode };
     }
 
@@ -2568,6 +2722,20 @@
   // { perTarget: [ {label, vdom, ok, lines?, reason?} ... ], anyOk: bool }
   // so the UI can show a clean per-device report — never a single wall of
   // text hiding which device(s) actually got skipped and why.
+  // srcaddr/dstaddr's own resolved value is a single object name for a
+  // plain (single-select) reference, but an ARRAY of names for a 'multi'
+  // reference (see resolvePolicyForTarget's resolveOne) — Fortinet's own
+  // CLI syntax for a multi-value field is simply several space-separated
+  // quoted names on the one `set` line (e.g. `set srcaddr "a" "b" "c"`),
+  // confirmed against Fortinet's own official CLI reference for
+  // list-type datasource fields. Kept as its own tiny helper (rather than
+  // inlined at each of the two call sites) so both srcaddr and dstaddr
+  // stay byte-for-byte consistent in how they quote/join.
+  function quoteNameOrList(nameOrNames) {
+    var arr = Array.isArray(nameOrNames) ? nameOrNames : [nameOrNames];
+    return arr.map(function (n) { return '"' + n + '"'; }).join(' ');
+  }
+
   function buildPolicyCli(intent, targets, allDevicesByLabel) {
     var perTarget = [];
     targets.forEach(function (target) {
@@ -2614,8 +2782,8 @@
       // this specific target.
       L.push('            set srcintf "' + r.names.srcintf + '"');
       L.push('            set dstintf "' + r.names.dstintf + '"');
-      L.push('            set srcaddr "' + r.names.src + '"');
-      L.push('            set dstaddr "' + r.names.dst + '"');
+      L.push('            set srcaddr ' + quoteNameOrList(r.names.src));
+      L.push('            set dstaddr ' + quoteNameOrList(r.names.dst));
       L.push('            set action ' + intent.action);
       L.push('            set schedule "' + r.names.schedule + '"');
       L.push('            set service "' + r.names.service + '"');
@@ -2705,6 +2873,7 @@
     parseDateToYYYYMMDD: parseDateToYYYYMMDD, scheduleAutoName: scheduleAutoName,
     addYearsToISODate: addYearsToISODate,
     inferInterfaceForRef: inferInterfaceForRef, cidrContainsIp: cidrContainsIp,
+    cidrRange: cidrRange, classifyCidrRelation: classifyCidrRelation,
     representativeIpsForIntentRef: representativeIpsForIntentRef, inferInterfaceForIps: inferInterfaceForIps,
     representativeIpsForRefOnDevice: representativeIpsForRefOnDevice,
     vipExtIntfFor: vipExtIntfFor, vipExtIntfConstraintForRef: vipExtIntfConstraintForRef,
@@ -3537,8 +3706,20 @@
   var _todayISO = todayISODate(); // computed once per page load
   var policyState = {
     targets: {},   // "device\x1fvdom" -> true
-    src:      { mode: 'builtin', pickerKey: '', comboOpen: false, filterText: '', kind: 'subnet', cidr: '', rangeStart: '', rangeEnd: '', fqdn: '', name: '' },
-    dst:      { mode: 'builtin', pickerKey: '', comboOpen: false, filterText: '', kind: 'subnet', cidr: '', rangeStart: '', rangeEnd: '', fqdn: '', name: '' },
+    // Per user request ("Source Destination 既有物件 資料結構上是多選\
+    // 目前只有單選"): `items` is the NEW multi-select list backing
+    // 'existing' mode for src/dst specifically — each entry is one
+    // parsed/resolved pick (see resolveCidrToken / addExistingPickToField
+    // in ui.js), either a paste-parsed CIDR/IP token or a manually
+    // searched-and-added existing object. `pasteText` is the raw
+    // multi-line textarea content (kept in state so it survives
+    // re-renders, cleared once "解析並加入" actually parses it into
+    // `items`). service/schedule/nat deliberately keep the OLD singular
+    // `pickerKey` model unchanged — this multi-select redesign is scoped
+    // to Source/Destination address objects only, matching the real
+    // use case (pasting a list of CIDRs), not every combobox in the form.
+    src:      { mode: 'builtin', pickerKey: '', comboOpen: false, filterText: '', kind: 'subnet', cidr: '', rangeStart: '', rangeEnd: '', fqdn: '', name: '', items: [], pasteText: '' },
+    dst:      { mode: 'builtin', pickerKey: '', comboOpen: false, filterText: '', kind: 'subnet', cidr: '', rangeStart: '', rangeEnd: '', fqdn: '', name: '', items: [], pasteText: '' },
     service:  { mode: 'builtin', pickerKey: '', comboOpen: false, filterText: '', protocol: 'TCP', portRange: '', name: '' },
     // Per user request: a native calendar picker (input type="date" pops
     // up the browser's own date-picker UI — no custom calendar widget
@@ -3720,14 +3901,54 @@
   function buildPicker(fieldName, sections) {
     var list = [];
     var idx = 0;
+    // Per user report ("檢查為什麼同樣IP會出現兩次"): a real FortiGate
+    // vdom/section can never legitimately contain two DIFFERENT objects
+    // sharing the exact same name (names are the unique key `edit`
+    // operates on) — so seeing the identical device.vdom :: name.value
+    // combination appear twice in this picker is never two distinct real
+    // objects, it's parseConfig's own `objects` array literally
+    // containing the SAME edit-block twice (confirmed: this happens
+    // whenever the raw uploaded config text itself contains that
+    // `edit "NAME" ... next` block more than once — e.g. a config that
+    // got concatenated/pasted twice, or an HA/global+vdom export that
+    // happens to repeat the same block — parseConfig has no dedup logic
+    // of its own and just pushes an object every time an edit block
+    // closes, once per occurrence in the text). findObjByName (used
+    // everywhere CLI is actually generated) already resolves by NAME and
+    // always returns the FIRST such occurrence, so every duplicate here
+    // is functionally a no-op — picking either one produces byte-
+    // identical CLI. Deduped here (first-occurrence-wins, matching
+    // findObjByName's own convention) purely so the picker/multi-CIDR
+    // candidate list doesn't show the same real object as if it were
+    // multiple distinct choices, which is confusing on its own and made
+    // the multi-CIDR match list actively worse (the same candidate
+    // appearing twice under one pasted CIDR, with no way to tell they're
+    // the same thing).
+    var seenNames = {};
     DEVICES.forEach(function (d) {
       d.parsed.objects.forEach(function (o) {
         if (o.Sect || sections.indexOf(o.S) < 0) return;
+        var dedupKey = d.label + '\u001f' + o.V + '\u001f' + o.S + '\u001f' + o.N;
+        if (seenNames[dedupKey]) return;
+        seenNames[dedupKey] = true;
         var key = fieldName + idx; idx++;
         var hostVdom = d.label + '.' + o.V;
         var nameValue = o.N + '  (' + (describeObjValue(o) || o.S) + ')';
         var entry = { key: key, device: d.label, vdom: o.V, section: o.S, name: o.N,
           hostVdom: hostVdom, nameValue: nameValue, label: hostVdom + ' :: ' + nameValue };
+        // Per user request ("Source Destination 既有物件 資料結構上是多
+        // 選...實際上的use case可能是輸入CIDR清單"): precompute this
+        // entry's own {start,end} range (when it's a plain subnet-type
+        // address object) right here, alongside everything else buildPicker
+        // already knows about the object — this is what lets the
+        // multi-CIDR-paste resolver (resolveCidrToken) compare a pasted
+        // CIDR against every candidate WITHOUT re-scanning every device's
+        // objects a second time in a separate pass.
+        if (o.S === 'firewall address' && o.T && o.T['subnet']) {
+          var cv = Core.netCidr(o.T['subnet']);
+          var cr = Core.cidrRange(cv);
+          if (cr) { entry.cidrValue = cv; entry.cidrRange = cr; }
+        }
         policyPickerIndex[key] = entry;
         list.push(entry);
       });
@@ -4094,12 +4315,35 @@
     ['src', 'dst'].forEach(function (field) {
       var f = policyState[field];
       if (!f || f.mode !== 'existing') return;
-      var picked = pickerIndex[f.pickerKey];
-      if (!picked || picked.kindIface) return;
-      if (!picked.device || !picked.vdom) return;
-      var key = picked.device + '\u001f' + picked.vdom;
-      if (!info[key]) info[key] = { src: false, dst: false };
-      info[key][field] = true;
+      // Per user request ("Source Destination 既有物件 資料結構上是多
+      // 選"): src/dst can now resolve to SEVERAL existing objects at
+      // once (see policyState.src/dst's own `items`) — EVERY one of
+      // them that's actually a confirmed, selected existing object
+      // (an item's chosenKeys, not just candidates still awaiting a
+      // human decision) makes its own device.vdom mandatory, exactly
+      // the same structural reasoning as the single-pick case this
+      // replaces: the traffic genuinely originates/terminates on each
+      // of those real devices, so a policy isn't optional there.
+      // Falls back to the old singular `pickerKey` for backward
+      // compatibility with any in-flight state from before this
+      // redesign (or a future single-object caller) that never went
+      // through the items[] path at all.
+      var pickerKeys = [];
+      if (f.items && f.items.length) {
+        f.items.forEach(function (it) {
+          if (it.chosenKeys && it.chosenKeys.length) pickerKeys = pickerKeys.concat(it.chosenKeys);
+        });
+      } else if (f.pickerKey) {
+        pickerKeys.push(f.pickerKey);
+      }
+      pickerKeys.forEach(function (pk) {
+        var picked = pickerIndex[pk];
+        if (!picked || picked.kindIface) return;
+        if (!picked.device || !picked.vdom) return;
+        var key = picked.device + '\u001f' + picked.vdom;
+        if (!info[key]) info[key] = { src: false, dst: false };
+        info[key][field] = true;
+      });
     });
     return info;
   }
@@ -4201,6 +4445,166 @@
     return '<div class="polrow"><b>' + label + '</b><div class="polrow-body">' + body + '</div></div>';
   }
 
+  // ---------- multi-CIDR-paste picker (Source/Destination "既有物件") ----------
+  // Per user request: the real use case for Source/Destination isn't
+  // picking one object by keyword — it's pasting a whole list of
+  // CIDRs/IPs (one per line) and having each one resolved against
+  // existing address objects, INCLUDING the case where a pasted CIDR
+  // isn't an exact match but overlaps/contains/is-contained-by something
+  // that already exists. Splits on newlines, commas, or semicolons so a
+  // paste from almost any source (a text file, a spreadsheet cell, a
+  // comma-separated list) tokenizes correctly.
+  function tokenizeCidrPaste(text) {
+    return String(text || '').split(/[\n,;]+/)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; });
+  }
+
+  // Human-readable label for how a pasted token's own matches relate to
+  // it — shown as a small italic note next to each candidate object, so
+  // the user isn't just shown a bare list with no explanation of WHY
+  // each one showed up.
+  function cidrRelationLabel(rel) {
+    if (rel === 'equal') return '完全相符';
+    if (rel === 'inputSubsetOfExisting') return '既有物件範圍較大,包含此輸入';
+    if (rel === 'inputSupersetOfExisting') return '此輸入涵蓋此既有物件';
+    if (rel === 'overlap') return '部分重疊';
+    return rel || '';
+  }
+
+  // The overall status badge for one parsed token — drives both the
+  // badge color (see CSS .cidr-*) and which action buttons/checkboxes
+  // renderCidrItem shows below it. Only 'exact' (a single, unambiguous
+  // exact-value match) is ever auto-resolved; every other outcome
+  // requires an explicit human decision before it can be deployed — see
+  // resolveCidrToken's own big comment for the full reasoning per case.
+  function cidrStatusLabel(status, n) {
+    switch (status) {
+      case 'exact': return '✓ 已比對到既有物件';
+      case 'exactMulti': return '⚠ 找到 ' + n + ' 個相同值物件,請選擇一個';
+      case 'supersetOfExisting': return '此輸入涵蓋 ' + n + ' 個既有物件';
+      case 'subsetOfExisting': return '⚠ 找到較大範圍的既有物件(會放大範圍)';
+      case 'overlap': return '⚠ 與既有物件部分重疊,需人工確認';
+      case 'notFound': return '找不到對應物件,將建立新物件';
+      case 'invalid': return '✗ 無法辨識為 IP/CIDR';
+      default: return status || '';
+    }
+  }
+
+  // Resolves ONE pasted token against the field's own candidate list
+  // (`fullList`, the same array buildPicker already produced for the
+  // manual search box — see its own new cidrValue/cidrRange annotations)
+  // using Core.classifyCidrRelation for real containment/overlap
+  // awareness, not just string equality. Returns the parsed item object
+  // that renderCidrItem/refFromField both consume — see policyState.src/
+  // dst's own big comment for the shape, and cidrStatusLabel above for
+  // exactly what each `status` means and how it's decided:
+  //   - a SINGLE exact-value match auto-selects itself (chosenKeys),
+  //     since there's no real ambiguity to resolve.
+  //   - MULTIPLE exact-value matches (the same CIDR value duplicated
+  //     under different object names — a real, surprisingly common
+  //     config-hygiene issue) never auto-pick one over another.
+  //   - a super/sub-network or partial-overlap relationship NEVER
+  //     auto-selects, since blindly widening or narrowing scope from
+  //     what was actually typed is exactly the kind of silent surprise
+  //     this tool's fail-safe direction exists to prevent.
+  //   - genuinely no match at all safely defaults to "create a new
+  //     object for this exact value" (createNew:true) — there's no
+  //     existing scope to conflict with, so this is the one case where
+  //     picking a default action is actually safe.
+  function resolveCidrToken(raw, fullList) {
+    var t = String(raw || '').trim();
+    if (!t) return null;
+    var norm = t.indexOf('/') < 0 ? t + '/32' : t;
+    var range = Core.cidrRange(norm);
+    if (!range) return { raw: raw, cidr: '', status: 'invalid', matches: [], chosenKeys: [], createNew: false };
+    var normCidr = Core.connectedNet(norm); // mask host bits off, e.g. "10.1.1.5/24" -> "10.1.1.0/24"
+    var matches = [];
+    (fullList || []).forEach(function (entry) {
+      if (!entry.cidrRange) return;
+      var rel = Core.classifyCidrRelation(range, entry.cidrRange);
+      if (rel && rel !== 'none') {
+        matches.push({ key: entry.key, hostVdom: entry.hostVdom, nameValue: entry.nameValue, cidrValue: entry.cidrValue, relation: rel });
+      }
+    });
+    var exact = matches.filter(function (m) { return m.relation === 'equal'; });
+    var status, chosenKeys = [], createNew = false;
+    if (exact.length === 1) { status = 'exact'; chosenKeys = [exact[0].key]; }
+    else if (exact.length > 1) { status = 'exactMulti'; }
+    else if (matches.some(function (m) { return m.relation === 'inputSubsetOfExisting'; })) { status = 'subsetOfExisting'; }
+    else if (matches.some(function (m) { return m.relation === 'inputSupersetOfExisting'; })) { status = 'supersetOfExisting'; }
+    else if (matches.length) { status = 'overlap'; }
+    else { status = 'notFound'; createNew = true; }
+    return { raw: raw, cidr: normCidr, status: status, matches: matches, chosenKeys: chosenKeys, createNew: createNew };
+  }
+
+  // Parses the field's current pasteText textarea into one new item PER
+  // line, appended to the field's own `items` array (never replacing
+  // what's already there — a second paste adds to the list, matching
+  // this codebase's general "automation only adds" principle), then
+  // clears pasteText since the textarea's job (staging text for parsing)
+  // is done; the parsed chips below are now the durable record.
+  function parseCidrPasteInto(fieldName) {
+    var f = policyState[fieldName];
+    var tokens = tokenizeCidrPaste(f.pasteText);
+    if (!tokens.length) return;
+    var fullList = policyPickerFullList[fieldName] || buildPicker(fieldName, fieldName === 'dst' ? ADDR_SECTIONS_DST : ADDR_SECTIONS);
+    if (!f.items) f.items = [];
+    tokens.forEach(function (tok) {
+      var item = resolveCidrToken(tok, fullList);
+      if (item) f.items.push(item);
+    });
+    f.pasteText = '';
+  }
+
+  // Adds ONE existing-object pick (from the manual search combobox, not
+  // the paste flow) directly as an already-resolved 'exact' item — this
+  // is what lets the search box keep working as a quick single-add path
+  // alongside the paste-a-list flow, both feeding the SAME `items` array.
+  function addExistingPickToField(fieldName, key, entry) {
+    var f = policyState[fieldName];
+    if (!f.items) f.items = [];
+    var already = f.items.some(function (it) { return it.chosenKeys && it.chosenKeys.length === 1 && it.chosenKeys[0] === key; });
+    if (already) return;
+    f.items.push({ raw: entry.name, cidr: entry.cidrValue || '', status: 'exact',
+      matches: [{ key: key, hostVdom: entry.hostVdom, nameValue: entry.nameValue, relation: 'equal' }],
+      chosenKeys: [key], createNew: false });
+  }
+
+  // Renders one parsed/added item as a chip: the raw token + a colored
+  // status badge + a remove button, and — for anything that isn't a
+  // clean exact match or a to-be-created new value — an expanded detail
+  // panel listing every candidate object as its own checkbox (so the
+  // user can pick exactly which one(s) to include), plus a "改為建立新
+  // 物件" fallback checkbox for when none of the candidates are actually
+  // the right choice.
+  function renderCidrItem(fieldName, idx, item) {
+    var head = '<code>' + esc(item.raw) + '</code> ' +
+      '<span class="cidribadge cidr-' + item.status + '">' + esc(cidrStatusLabel(item.status, item.matches.length)) + '</span>' +
+      '<button type="button" class="cidrx" data-cidr-remove="' + fieldName + ':' + idx + '" title="移除">✕</button>';
+    var detail = '';
+    if (item.status === 'invalid') {
+      detail = '<div class="cidrdetail hint">無法辨識為有效的 IP/CIDR,請修正原始清單或移除此項。</div>';
+    } else if (item.status === 'notFound') {
+      detail = '<div class="cidrdetail hint">將建立新物件:<b>' + esc(item.cidr) + '</b></div>';
+    } else {
+      detail = '<div class="cidrdetail">';
+      item.matches.forEach(function (m) {
+        var checked = item.chosenKeys.indexOf(m.key) >= 0;
+        detail += '<label class="cidrmatch"><input type="checkbox"' + (checked ? ' checked' : '') +
+          ' data-cidr-toggle="' + fieldName + ':' + idx + ':' + m.key + '"> ' +
+          esc(m.hostVdom) + ' :: ' + esc(m.nameValue) + ' <i>(' + esc(cidrRelationLabel(m.relation)) + ')</i></label>';
+      });
+      if (item.matches.length > 1) {
+        detail += '<button type="button" class="cidrminibtn" data-cidr-selectall="' + fieldName + ':' + idx + '">全選既有物件</button>';
+      }
+      detail += '<label class="cidrmatch"><input type="checkbox"' + (item.createNew ? ' checked' : '') +
+        ' data-cidr-createnew="' + fieldName + ':' + idx + '"> 改為建立新物件 (' + esc(item.cidr) + ')</label>';
+      detail += '</div>';
+    }
+    return '<div class="cidritem cidritem-' + item.status + '">' + head + detail + '</div>';
+  }
+
   function renderAddrField(fieldName, label, sections) {
     var f = policyState[fieldName];
     var list = buildPicker(fieldName, sections || ADDR_SECTIONS);
@@ -4216,8 +4620,29 @@
       var vipNote = fieldName === 'dst'
         ? ' 若選擇 VIP/VIP 群組,且其 extintf 為特定介面(非 any),Srcintf 會直接採用該介面(FortiOS 規定必須一致)。'
         : '';
-      body += '<div class="polsub">' + comboboxHtml(fieldName, list, f) +
-        '<div class="hint">選擇既有物件時,該物件所在的裝置.vdom 會列為必要部署目標(不可取消)。' + vipNote + '</div></div>';
+      // REDESIGNED HERE per user request ("Source Destination既有物件
+      // 資料結構上是多選 目前只有單選...實際上的use case可能是輸入
+      // 192.168.1.1/32 / 192.168.1.2/32 / .../ 192.168.100.0/24"):
+      // 既有物件 is no longer a single pick — a paste box accepts a
+      // whole multi-line CIDR/IP list, each line resolved independently
+      // against every loaded device's address objects (see
+      // resolveCidrToken), including the case where a pasted CIDR isn't
+      // an exact match but CONTAINS or IS CONTAINED BY something that
+      // already exists (see cidrStatusLabel for the full set of
+      // outcomes). The old single-keyword search box is kept below,
+      // unchanged in spirit, as a quick way to add ONE more object by
+      // name without needing its literal CIDR value — but it now ADDS to
+      // the same list instead of replacing a single selection.
+      var chipsHtml = (f.items || []).map(function (it, idx) { return renderCidrItem(fieldName, idx, it); }).join('');
+      body += '<div class="polsub">' +
+        '<div class="cidrpastewrap">' +
+          '<textarea class="cidrpaste" rows="3" placeholder="貼上多個 CIDR/IP,一行一個,例如:&#10;192.168.1.1/32&#10;192.168.1.2/32&#10;192.168.100.0/24" data-field="' + fieldName + '.pasteText">' + esc(f.pasteText || '') + '</textarea>' +
+          '<button type="button" class="cidrparsebtn" data-cidr-parse="' + fieldName + '">解析並加入 ↓</button>' +
+        '</div>' +
+        '<div class="cidritems">' + (chipsHtml || '<span class="hint">尚未加入任何物件 — 貼上 CIDR 清單解析,或用下方搜尋逐一加入。</span>') + '</div>' +
+        '<div class="hint">以關鍵字搜尋單一物件加入:</div>' +
+        comboboxHtml(fieldName, list, f) +
+        '<div class="hint">每一個實際被選用的既有物件,其所在裝置.vdom 都會列為必要部署目標(不可取消)。' + vipNote + '</div></div>';
     } else if (f.mode === 'new') {
       // Per user request ("物件名稱原則上都是自動分配"): the name is no
       // longer free-text — it's computed directly from the value itself
@@ -4495,6 +4920,39 @@
         if (el.checked) policyState.targets[tk] = true; else delete policyState.targets[tk];
         return;
       }
+      // Per user request ("Source Destination 既有物件 資料結構上是多
+      // 選"): a chip's own per-candidate checkbox (data-cidr-toggle,
+      // "field:idx:pickerKey") adds/removes that ONE candidate from the
+      // item's chosenKeys — checking any candidate implicitly cancels
+      // "改為建立新物件" for that same item (the two are mutually
+      // exclusive per item: either use one-or-more existing objects, or
+      // create a new one, never both at once for a single pasted token).
+      if (el.hasAttribute && el.hasAttribute('data-cidr-toggle')) {
+        var togParts = el.getAttribute('data-cidr-toggle').split(':');
+        var togItem = policyState[togParts[0]].items[parseInt(togParts[1], 10)];
+        if (togItem) {
+          var togKey = togParts[2];
+          var pos = togItem.chosenKeys.indexOf(togKey);
+          if (el.checked && pos < 0) togItem.chosenKeys.push(togKey);
+          if (!el.checked && pos >= 0) togItem.chosenKeys.splice(pos, 1);
+          if (el.checked) togItem.createNew = false;
+        }
+        renderPolicyBuilder();
+        return;
+      }
+      // "改為建立新物件" checkbox (data-cidr-createnew, "field:idx") —
+      // checking it clears any chosen existing-object candidates for
+      // this same item, same mutual-exclusivity reasoning as above.
+      if (el.hasAttribute && el.hasAttribute('data-cidr-createnew')) {
+        var cnParts = el.getAttribute('data-cidr-createnew').split(':');
+        var cnItem = policyState[cnParts[0]].items[parseInt(cnParts[1], 10)];
+        if (cnItem) {
+          cnItem.createNew = el.checked;
+          if (el.checked) cnItem.chosenKeys = [];
+        }
+        renderPolicyBuilder();
+        return;
+      }
       // policy builder: any data-field input. Radio/select "mode" fields
       // (whose name ends in ".mode", ".kind", ".poolMode", or is the bare
       // top-level "action") change which sub-fields are even VISIBLE, so
@@ -4598,7 +5056,15 @@
         return;
       }
       var fieldPath = el.getAttribute && el.getAttribute('data-field');
-      if (!fieldPath || el.tagName !== 'INPUT' || el.type === 'checkbox' || el.type === 'radio') return;
+      // TEXTAREA added here specifically for src/dst's new multi-line
+      // CIDR-paste box (see policyState.src/dst's `pasteText` and
+      // renderAddrField's redesigned 'existing' mode) — every other
+      // data-field element in this form is a plain <input>, but a
+      // multi-line paste genuinely needs a <textarea>, and this handler
+      // otherwise behaves identically for it (silent state update on
+      // every keystroke, no re-render, so focus/cursor position is never
+      // disrupted while pasting/editing a long list).
+      if (!fieldPath || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.type === 'checkbox' || el.type === 'radio') return;
       var parts = fieldPath.split('.');
       if (parts.length === 1) { policyState[parts[0]] = el.value; }
       else { policyState[parts[0]][parts[1]] = el.value; }
@@ -4662,6 +5128,34 @@
     }, true);
     document.body.addEventListener('click', function (e){
       if (e.target && e.target.id === 'btnPolicyGen') { generatePolicyCli(); return; }
+      // Per user request ("Source Destination 既有物件 資料結構上是多
+      // 選...實際上的use case可能是輸入CIDR清單"): the three buttons
+      // the multi-CIDR-paste picker adds (renderCidrItem/renderAddrField)
+      // — "解析並加入" parses the paste textarea into new chips, each
+      // chip's own ✕ removes it, and an ambiguous chip's "全選既有物件"
+      // selects every one of its candidate matches at once.
+      var parseBtn = e.target && e.target.closest ? e.target.closest('[data-cidr-parse]') : null;
+      if (parseBtn) {
+        parseCidrPasteInto(parseBtn.getAttribute('data-cidr-parse'));
+        renderPolicyBuilder();
+        return;
+      }
+      var rmBtn = e.target && e.target.closest ? e.target.closest('[data-cidr-remove]') : null;
+      if (rmBtn) {
+        var rmParts = rmBtn.getAttribute('data-cidr-remove').split(':');
+        var rmItems = policyState[rmParts[0]].items;
+        if (rmItems) rmItems.splice(parseInt(rmParts[1], 10), 1);
+        renderPolicyBuilder();
+        return;
+      }
+      var saBtn = e.target && e.target.closest ? e.target.closest('[data-cidr-selectall]') : null;
+      if (saBtn) {
+        var saParts = saBtn.getAttribute('data-cidr-selectall').split(':');
+        var saItem = policyState[saParts[0]].items[parseInt(saParts[1], 10)];
+        if (saItem) { saItem.chosenKeys = saItem.matches.map(function (m) { return m.key; }); saItem.createNew = false; }
+        renderPolicyBuilder();
+        return;
+      }
       var comboItem = e.target && e.target.closest ? e.target.closest('.polcombo-item') : null;
       if (comboItem) {
         var listContainer = comboItem.closest('.polcombo-list');
@@ -4683,6 +5177,28 @@
             // per-target auto-inference.
             policyState[comboField2].userTouched = true;
             policyState[comboField2].auto = false;
+            renderPolicyBuilder();
+          } else if (comboField2 === 'src' || comboField2 === 'dst') {
+            // Per user request ("Source Destination 既有物件 資料結構上
+            // 是多選"): a manual search-box pick for src/dst now ADDS to
+            // the field's own multi-select `items` list (see
+            // addExistingPickToField) instead of overwriting a single
+            // pickerKey — this lets the search box keep working as a
+            // quick "add one more by name" path alongside the paste-a-
+            // list flow below it, both feeding the exact same list that
+            // ultimately gets deployed.
+            addExistingPickToField(comboField2, clickedKey, pickedEntry);
+            policyState[comboField2].comboOpen = false;
+            var ifaceKeyNameM = ifaceFieldNameFor(comboField2);
+            if (ifaceKeyNameM && !policyState[ifaceKeyNameM].userTouched) {
+              policyState[ifaceKeyNameM].auto = true;
+              var srcDevEntryM = DEVICES.filter(function (d) { return d.label === pickedEntry.device; })[0];
+              if (srcDevEntryM) {
+                var inferredIfaceM = autoFillIfaceValue(comboField2, policyState[comboField2], pickedEntry, policyState[ifaceKeyNameM],
+                  function (vdom, section, name) { return Core.inferInterfaceForRef(srcDevEntryM.parsed, vdom, section, name, {}); });
+                if (inferredIfaceM) policyState[ifaceKeyNameM].value = inferredIfaceM;
+              }
+            }
             renderPolicyBuilder();
           } else {
             policyState[comboField2].pickerKey = clickedKey;
@@ -4797,6 +5313,43 @@
     var f = policyState[fieldName];
     if (builtinName && f.mode === 'builtin') return { mode: 'builtin', name: builtinName };
     if (f.mode === 'existing') {
+      // Per user request ("Source Destination 既有物件 資料結構上是多
+      // 選"): src/dst's 'existing' mode is now built from the field's
+      // own `items` list (each independently resolved by the multi-
+      // CIDR-paste picker or the manual search-add box — see
+      // resolveCidrToken/addExistingPickToField) rather than a single
+      // pickerKey. Every item must be in an actionable state before
+      // generation is allowed to proceed: an item still awaiting a
+      // human decision (e.g. 'exactMulti'/'overlap' with no chosenKeys
+      // AND not marked createNew, or a genuinely 'invalid' token) makes
+      // the WHOLE field return null here, same fail-safe direction as
+      // every other incomplete-field case this function already
+      // handles — never silently drop an unresolved item and generate
+      // CLI for only PART of what the user pasted.
+      if (fieldName === 'src' || fieldName === 'dst') {
+        var items = f.items || [];
+        if (!items.length) return null;
+        var refItems = [];
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i];
+          if (it.status === 'invalid') return null;
+          if (it.createNew) {
+            var addrVal2 = { kind: 'subnet', cidr: it.cidr };
+            var nm2 = Core.addressAutoName(addrVal2);
+            if (!nm2) return null;
+            refItems.push({ kind: 'new', section: 'firewall address', name: nm2, fieldsAndKey: Core.addressFieldsAndKey(addrVal2) });
+            continue;
+          }
+          if (!it.chosenKeys || !it.chosenKeys.length) return null; // still needs a human decision
+          for (var j = 0; j < it.chosenKeys.length; j++) {
+            var picked2 = policyPickerIndex[it.chosenKeys[j]];
+            if (!picked2) return null; // stale key (e.g. device reloaded) — force re-resolution
+            refItems.push({ kind: 'existing', section: picked2.section, name: picked2.name, sourceDevice: picked2.device, sourceVdom: picked2.vdom });
+          }
+        }
+        if (!refItems.length) return null;
+        return { mode: 'multi', items: refItems };
+      }
       var picked = policyPickerIndex[f.pickerKey];
       if (!picked) return null; // caller treats this as "please make a selection"
       return { mode: 'existing', section: picked.section, name: picked.name, sourceDevice: picked.device, sourceVdom: picked.vdom };
