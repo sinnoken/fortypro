@@ -241,6 +241,14 @@
     background: #fff7e0; border: 1px solid #e6c85a; border-radius: 6px; font-size: 12px; color: #6b5300; }
   .cidrlock code { font-family: Consolas, monospace; font-weight: 700; }
   .cidrhiddennote { color: #9aa0ab; font-size: 11px; font-style: italic; }
+  /* Per user request ("理論上 是CIDR有IP範圍碰到任何成員的就可以列入
+     清單"): a group candidate's own match line (renderCidrItem) is
+     followed by this small note listing exactly WHICH member(s) of the
+     group actually triggered the match — a group itself has no IP value
+     of its own, so without this the user would have no way to verify
+     WHY a group showed up as a candidate at all. */
+  .cidrviamembers { margin: 2px 0 4px 22px; font-size: 11px; color: #6b5300; }
+  .cidrviamembers code { font-family: Consolas, monospace; font-weight: 700; }
   th.sorth:hover { background: #e4e6ea; }
   th.sorth .arr { color: #3b73d6; font-size: 10px; }
   .typebar { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 12px; }
@@ -276,6 +284,24 @@
     margin-right: 12px; user-select: none; }
   .ctxhit { background: #fff6d6; }
   .ctxhit .ln { color: #b8860b; font-weight: 700; }
+
+  /* ---- rule-pack import/export (JSON) ---- */
+  header .rulebadge { font-size: 12px; color: #4a5160; background: #eef1f6;
+    border: 1px solid #dde1ea; border-radius: 10px; padding: 4px 11px; white-space: nowrap; }
+  .mdbody .rp-panel, .mdbody .rp-panel * { white-space: normal; font-family: "Segoe UI", Arial, sans-serif; }
+  .rp-panel table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 8px 0; }
+  .rp-panel th, .rp-panel td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eef0f3; }
+  .rp-tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 9px; color: #fff; }
+  .rp-tag-new { background: #2e7d32; }
+  .rp-tag-override { background: #e65100; }
+  .rp-errlist { color: #b71c1c; font-size: 12.5px; padding-left: 18px; margin: 6px 0; }
+  .rp-siteopt { display: block; font-size: 12.5px; margin: 10px 0; color: #4a5160; }
+  .rp-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .rp-actions button { padding: 6px 14px; border: 1px solid #cfd3db; border-radius: 5px;
+    background: #fff; cursor: pointer; font-size: 13px; }
+  .rp-actions button:hover { background: #f0f2f5; }
+  #btnRpApply { background: #1565c0; color: #fff; border-color: #1565c0; }
+  #btnRpApply:hover { background: #10559f; }
 </style>
 </head>
 <body>
@@ -290,6 +316,11 @@
       <span class="name">FortiToolkit</span>
       <label><input type="checkbox" id="chkPass"> Show passing</label>
       <label><input type="checkbox" id="chkCross" style="display:none"> Compare across VDOMs</label>
+      <span class="rulebadge" id="ruleBadge" title="目前 Compliance 頁籤生效的規則統計">規則載入中…</span>
+      <input id="rulePicker" type="file" accept=".json,application/json" style="display:none">
+      <button id="btnImportRules" title="匯入 fortitoolkit-rulepack JSON 檔,擴充/覆蓋內建 Compliance 規則">匯入規則 (JSON)</button>
+      <button id="btnExportRules" title="將目前生效的規則(內建+自訂)匯出成 JSON,可用 FortiRuleEditor.html 編輯後再匯入">匯出規則 (JSON)</button>
+      <button id="btnResetRules" title="清除本次匯入的自訂規則,還原為內建規則" style="display:none">還原內建規則</button>
       <button id="btnCsv">Export CSV</button>
       <button id="btnOpen">+ Add config</button>
     </header>
@@ -3039,6 +3070,7 @@
       title:'應啟用 VDOM', 
       check:function (p){ return { pass: !!p.vdomMode,
         detail: p.vdomMode ? '' : 'VDOM 未啟用(single VDOM)' }; },
+      _checkType:'vdomEnabled', _params:{},
       why:'多 VDOM 可將管理與流量分域,降低單一失誤的影響範圍。',
       fix:['# config system global','#   set vdom-mode multi-vdom','# end'] },
     { id:'DEV-02', sev:'medium', cat:'System hardening', mode:'device',
@@ -3047,6 +3079,7 @@
         var ha = Core.deviceInfo(p).ha;
         return { pass: !!ha, detail: ha ? '' : 'HA mode = standalone(無備援)' };
       },
+      _checkType:'haEnabled', _params:{},
       why:'standalone 無備援,設備故障即造成服務中斷。',
       fix:['# config system ha','#   set mode a-p','#   set group-name <cluster>','# end'] },
     { id:'DEV-03', sev:'low', cat:'System hardening', mode:'device',
@@ -3058,9 +3091,187 @@
         return { pass: okv, detail: okv ? '' : 'firmware ' + (fw||'unknown') +
           ' 不在核可清單 ' + SITE.approvedFirmware.join('/') };
       },
+      _checkType:'firmwareApproved', _params:{},
       why:'非核可韌體可能含已知漏洞或未經驗證的行為。',
       fix:['# 依維運程序升級至核可版本'] }
   ];
+
+  // ---------- custom rule pack import/export (JSON) ----------
+  var RULEPACK_SCHEMA = 'fortitoolkit-rulepack';
+  var CUSTOM_RULES = [];
+  var pendingImport = null;
+  var CHECK_BUILDERS = {
+    vdomEnabled: function () {
+      return function (p) { return { pass: !!p.vdomMode, detail: p.vdomMode ? '' : 'VDOM 未啟用(single VDOM)' }; };
+    },
+    haEnabled: function () {
+      return function (p) {
+        var ha = Core.deviceInfo(p).ha;
+        return { pass: !!ha, detail: ha ? '' : 'HA mode = standalone(無備援)' };
+      };
+    },
+    firmwareApproved: function (params) {
+      return function (p) {
+        var list = (params && params.approvedFirmware && params.approvedFirmware.length) ? params.approvedFirmware : SITE.approvedFirmware;
+        if (!list || !list.length) return { pass: true };
+        var fw = Core.deviceInfo(p).firmware;
+        var ok = list.some(function (v) { return fw.indexOf(v) === 0; });
+        return { pass: ok, detail: ok ? '' : 'firmware ' + (fw || 'unknown') + ' 不在核可清單 ' + list.join('/') };
+      };
+    }
+  };
+  var VALID_SEV = ['critical','high','medium','low','info'];
+  var VALID_ZONE = ['global','vdom','any'];
+  var VALID_OP = ['exists','missing','eq','ne','in','notin','has','nothas','gte','lte','match','notmatch'];
+  var OPS_NEEDING_VAL = ['eq','ne','in','notin','has','nothas','gte','lte','match','notmatch'];
+  var OPS_NEEDING_ARRAY_VAL = ['in','notin'];
+  function validateOneRule(r, idx) {
+    var tag = 'rules[' + idx + ']' + (r && r.id ? ' (' + r.id + ')' : '');
+    if (!r || typeof r !== 'object') return [tag + ': 不是一個物件'];
+    var errs = [];
+    if (!r.id || typeof r.id !== 'string') errs.push(tag + ': 缺少 id');
+    if (VALID_SEV.indexOf(r.sev) < 0) errs.push(tag + ': sev 必須是 ' + VALID_SEV.join('/'));
+    if (!r.cat || typeof r.cat !== 'string') errs.push(tag + ': 缺少 cat');
+    if (!r.title || typeof r.title !== 'string') errs.push(tag + ': 缺少 title');
+    if (!r.why || typeof r.why !== 'string') errs.push(tag + ': 缺少 why(不做會怎樣的說明)');
+    if (r.fix !== undefined && !Array.isArray(r.fix)) errs.push(tag + ': fix 必須是字串陣列');
+    if (r.mode === 'device') {
+      if (!r.checkType || !CHECK_BUILDERS[r.checkType]) errs.push(tag + ': checkType 必須是 ' + Object.keys(CHECK_BUILDERS).join('/'));
+      if (r.params !== undefined && typeof r.params !== 'object') errs.push(tag + ': params 必須是物件');
+    } else if (r.mode === 'each' || r.mode === 'section') {
+      if (!r.section || typeof r.section !== 'string') errs.push(tag + ': 缺少 section');
+      if (VALID_ZONE.indexOf(r.zone) < 0) errs.push(tag + ': zone 必須是 ' + VALID_ZONE.join('/'));
+      if (!Array.isArray(r.conds) || !r.conds.length) {
+        errs.push(tag + ': conds 必須是至少一項的陣列');
+      } else {
+        r.conds.forEach(function (c, ci) {
+          var ctag = tag + '.conds[' + ci + ']';
+          if (!c || !c.key || typeof c.key !== 'string') errs.push(ctag + ': 缺少 key');
+          if (VALID_OP.indexOf(c && c.op) < 0) errs.push(ctag + ': op 必須是 ' + VALID_OP.join('/'));
+          if (c && OPS_NEEDING_VAL.indexOf(c.op) >= 0 && (c.val === undefined || c.val === null || c.val === '')) errs.push(ctag + ': op="' + c.op + '" 需要 val');
+          if (c && OPS_NEEDING_ARRAY_VAL.indexOf(c.op) >= 0 && c.val !== undefined && !Array.isArray(c.val)) errs.push(ctag + ': op="' + c.op + '" 的 val 必須是陣列');
+          if (c && (c.op === 'match' || c.op === 'notmatch') && typeof c.val === 'string') {
+            try { new RegExp(c.val); } catch (e) { errs.push(ctag + ': val 不是合法正則表達式 — ' + e.message); }
+          }
+        });
+      }
+    } else {
+      errs.push(tag + ': mode 必須是 each/section/device');
+    }
+    return errs;
+  }
+  function validateRulePack(json) {
+    if (!json || typeof json !== 'object') return { ok:false, errors:['檔案內容不是有效的 JSON 物件'] };
+    if (!Array.isArray(json.rules)) return { ok:false, errors:['缺少 rules 陣列'] };
+    var errors = [];
+    if (json.schema && json.schema !== RULEPACK_SCHEMA) errors.push('注意: schema 不是 "' + RULEPACK_SCHEMA + '",仍會嘗試解析。');
+    var seen = {}, hardErrors = [];
+    json.rules.forEach(function (r, i) {
+      hardErrors = hardErrors.concat(validateOneRule(r, i));
+      if (r && r.id) { if (seen[r.id]) hardErrors.push('rules[' + i + ']: id "' + r.id + '" 在檔案內重複'); seen[r.id] = true; }
+    });
+    if (hardErrors.length) return { ok:false, errors: errors.concat(hardErrors) };
+    var normalized = json.rules.map(function (r) {
+      if (r.mode === 'device') {
+        return { id:r.id, sev:r.sev, cat:r.cat, mode:'device', title:r.title,
+                 check: CHECK_BUILDERS[r.checkType](r.params || {}), why:r.why, fix: r.fix || [],
+                 _checkType: r.checkType, _params: r.params || {} };
+      }
+      return { id:r.id, sev:r.sev, cat:r.cat, mode:r.mode, section:r.section, zone:r.zone, title:r.title, conds:r.conds, why:r.why, fix:r.fix || [] };
+    });
+    return { ok:true, errors: errors, rules: normalized, meta: json.meta || {}, site: json.site || null };
+  }
+  function getEffectivePack() {
+    if (!CUSTOM_RULES.length) return PACK;
+    var map = {}, order = [];
+    PACK.forEach(function (r) { map[r.id] = r; order.push(r.id); });
+    CUSTOM_RULES.forEach(function (r) { if (!(r.id in map)) order.push(r.id); map[r.id] = r; });
+    return order.map(function (id) { return map[id]; });
+  }
+  function ruleBadgeText() {
+    if (!CUSTOM_RULES.length) return '規則:' + PACK.length + '(內建)';
+    var overrideCount = CUSTOM_RULES.filter(function (r) { return PACK.some(function (b) { return b.id === r.id; }); }).length;
+    var addCount = CUSTOM_RULES.length - overrideCount;
+    return '規則:' + getEffectivePack().length + '(內建 ' + PACK.length + (addCount ? ' + 新增 ' + addCount : '') + (overrideCount ? '、覆蓋 ' + overrideCount : '') + ')';
+  }
+  function updateRuleBadge() {
+    var el = document.getElementById('ruleBadge');
+    if (el) el.textContent = ruleBadgeText();
+    var rb = document.getElementById('btnResetRules');
+    if (rb) rb.style.display = CUSTOM_RULES.length ? '' : 'none';
+  }
+  function importRulePackFile(file) {
+    var fr = new FileReader();
+    fr.onload = function () {
+      var json;
+      try { json = JSON.parse(fr.result); } catch (e) { showRuleImportError(['JSON 解析失敗: ' + e.message]); return; }
+      var v = validateRulePack(json);
+      if (!v.ok) { showRuleImportError(v.errors); return; }
+      showRuleImportSummary(v);
+    };
+    fr.readAsText(file);
+  }
+  function showRuleImportError(errors) {
+    document.getElementById('mdTitle').textContent = '規則匯入失敗';
+    document.getElementById('mdBody').innerHTML =
+      '<div class="rp-panel"><div class="hint">檔案未套用,請修正後重新匯入。</div>' +
+      '<ul class="rp-errlist">' + errors.map(function (e){ return '<li>' + esc(e) + '</li>'; }).join('') + '</ul></div>';
+    document.getElementById('modal').style.display = 'flex';
+  }
+  function showRuleImportSummary(v) {
+    pendingImport = v;
+    var rows = v.rules.map(function (r) {
+      var isOverride = PACK.some(function (b){ return b.id === r.id; });
+      return '<tr><td>' + (isOverride ? '<span class="rp-tag rp-tag-override">覆蓋</span>' : '<span class="rp-tag rp-tag-new">新增</span>') +
+        '</td><td>' + esc(r.id) + '</td><td>' + esc(r.sev) + '</td><td>' + esc(r.cat) + '</td><td>' + esc(r.title) + '</td></tr>';
+    }).join('');
+    var overrideN = v.rules.filter(function (r){ return PACK.some(function (b){ return b.id === r.id; }); }).length;
+    var siteNote = v.site ? '<label class="rp-siteopt"><input type="checkbox" id="chkApplySite" checked> 同時套用檔案內的 SITE 站點值(approvedFirmware / syslogServers / hostnamePattern)</label>' : '';
+    document.getElementById('mdTitle').textContent = '匯入規則包 — ' + esc(v.meta.name || '未命名');
+    document.getElementById('mdBody').innerHTML =
+      '<div class="rp-panel">' +
+      '<div class="hint">共 ' + v.rules.length + ' 條規則(新增 ' + (v.rules.length - overrideN) + '、覆蓋內建 ' + overrideN + ' 條)。套用後會取代目前的自訂規則集,並對已載入的設定重新分析。</div>' +
+      (v.errors.length ? '<div class="hint" style="color:#b8860b">' + v.errors.map(esc).join('<br>') + '</div>' : '') +
+      '<table><thead><tr><th></th><th>ID</th><th>Sev</th><th>Cat</th><th>Title</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      siteNote + '<div class="rp-actions"><button id="btnRpCancel">取消</button><button id="btnRpApply">套用</button></div></div>';
+    document.getElementById('modal').style.display = 'flex';
+  }
+  function applyPendingImport() {
+    if (!pendingImport) return;
+    CUSTOM_RULES = pendingImport.rules;
+    var applySite = document.getElementById('chkApplySite');
+    if (pendingImport.site && applySite && applySite.checked) {
+      if (Array.isArray(pendingImport.site.approvedFirmware)) SITE.approvedFirmware = pendingImport.site.approvedFirmware;
+      if (Array.isArray(pendingImport.site.syslogServers)) SITE.syslogServers = pendingImport.site.syslogServers;
+      if (typeof pendingImport.site.hostnamePattern === 'string') SITE.hostnamePattern = pendingImport.site.hostnamePattern;
+    }
+    var count = CUSTOM_RULES.length;
+    pendingImport = null;
+    closeDetail();
+    updateRuleBadge();
+    if (DEVICES.length) reanalyzeAll();
+    setStatus('已套用匯入的規則包,共 ' + count + ' 條自訂規則生效中。');
+  }
+  function cancelPendingImport() { pendingImport = null; closeDetail(); }
+  function resetToBuiltinRules() {
+    CUSTOM_RULES = [];
+    updateRuleBadge();
+    if (DEVICES.length) reanalyzeAll();
+    setStatus('已還原為內建規則。');
+  }
+  function exportRulePack() {
+    var rules = getEffectivePack().map(function (r) {
+      if (r.mode === 'device') {
+        return { id:r.id, sev:r.sev, cat:r.cat, mode:'device', checkType: r._checkType || '', params: r._params || {}, title:r.title, why:r.why, fix:r.fix || [] };
+      }
+      return { id:r.id, sev:r.sev, cat:r.cat, mode:r.mode, section:r.section, zone:r.zone, title:r.title, conds:r.conds, why:r.why, fix:r.fix || [] };
+    });
+    var out = { schema: RULEPACK_SCHEMA, version: 1,
+      meta: { name: 'FortiToolkit 匯出規則包', note: '', generatedAt: new Date().toISOString() },
+      site: { approvedFirmware: SITE.approvedFirmware, syslogServers: SITE.syslogServers, hostnamePattern: SITE.hostnamePattern },
+      rules: rules };
+    downloadJson('fortitoolkit-rulepack.json', out);
+  }
 
   // ---------- analysis ----------
   // ensure a unique device label even if two files share a hostname
@@ -3075,7 +3286,7 @@
   function addDevice(text, fileName, fileObj) {
     var t0 = performance.now();
     var parsed = Core.parseConfig(text);
-    var comp = Core.invokeCompliance(parsed, PACK);
+    var comp = Core.invokeCompliance(parsed, getEffectivePack());
     var clean = Core.invokeCleanup(parsed);
     var cross = document.getElementById('chkCross').checked;
     var dups = Core.findDuplicates(parsed, cross);
@@ -3421,7 +3632,8 @@
       var rank = {critical:0,high:1,medium:2,low:3,info:4};
       return (rank[a.Sev]-rank[b.Sev]) || (a.Id<b.Id?-1:1);
     });
-    var head = ['fix','','Sev','vdom','ID','Category','Requirement','Object','Observed','Line'];
+    var multi = DEVICES.length > 1;
+    var head = (multi ? ['Host'] : []).concat(['fix','','Sev','vdom','ID','Category','Requirement','Object','Observed','Line']);
     var body = rows.map(function (r){
       var st = r.Skip ? '<span class="pill" style="background:#eee;color:#777">skip</span>'
              : r.Pass ? '<span class="pill" style="background:#e8f5e9;color:#2e7d32">pass</span>'
@@ -3429,27 +3641,33 @@
       var tick = (!r.Pass && !r.Skip)
         ? '<input type="checkbox" class="tick" data-sel="comp" data-id="'+r._id+'"'+(sel.comp.has(r._id)?' checked':'')+'>'
         : '';
-      return [tick, st,
+      var row = [tick, st,
         '<span style="color:'+(SEV[r.Sev]||'#666')+';font-weight:600">'+r.Sev+'</span>',
         esc(r.V), r.Id, esc(r.Cat), esc(r.Title), esc(r.Obj),
         esc(r.Detail), r.Line||''];
+      if (multi) row.unshift(esc(r._dev));
+      return row;
     });
     var fails = rows.filter(function(r){return !r.Pass&&!r.Skip;});
     var tOf = function (r){ return r.Sev; };
     typeCtx.comp = { typeOf: tOf, rows: fails };
     var bar = typeBar('comp', fails, tOf, function (s){ return SEV[s]||'#666'; });
     document.getElementById('comp').innerHTML = bar + table(head, body,
-      'Rules run on the parsed object tree, so a setting on one entry can never satisfy a rule about another.',
+      'Rules run on the parsed object tree, so a setting on one entry can never satisfy a rule about another.' +
+      (multi ? ' Ticking rows across different hosts is fine — generating CLI just requires focusing ONE host in the tree first.' : ''),
       metaOf(rows, 'Line'));
     document.getElementById('tabComp').textContent = 'Compliance (' + fails.length + ')';
   }
 
   function renderSafe() {
     var rows = A.clean.safe.filter(function (r){ return matchRow(r); });
-    var head = ['del','vdom','Kind','Name','Value','Why','Line'];
+    var multi = DEVICES.length > 1;
+    var head = (multi ? ['Host'] : []).concat(['del','vdom','Kind','Name','Value','Why','Line']);
     var body = rows.map(function (r){
       var tick = '<input type="checkbox" class="tick" data-sel="safe" data-id="'+r._id+'"'+(sel.safe.has(r._id)?' checked':'')+'>';
-      return [tick, esc(r.V), esc(r.Kind), esc(r.N), esc(r.Val), esc(r.Why), r.L]; });
+      var row = [tick, esc(r.V), esc(r.Kind), esc(r.N), esc(r.Val), esc(r.Why), r.L];
+      if (multi) row.unshift(esc(r._dev));
+      return row; });
     var held = A.clean.held.filter(function (r){ return matchRow(r); });
     var note = 'Nothing in the config points at these. Verify with refcnt on the device before deleting.' +
       (held.length ? ' — ' + held.length + ' built-in object(s) held back and NOT listed.' : '');
@@ -3462,10 +3680,13 @@
 
   function renderDup() {
     var rows = A.dups.filter(function (r){ return matchRow(r); });
-    var head = ['plan','vdom','Category','Same value','Count','Suggested keep','Would drop','Line'];
+    var multi = DEVICES.length > 1;
+    var head = (multi ? ['Host'] : []).concat(['plan','vdom','Category','Same value','Count','Suggested keep','Would drop','Line']);
     var body = rows.map(function (r){
       var tick = '<input type="checkbox" class="tick" data-sel="dup" data-id="'+r._id+'"'+(sel.dup.has(r._id)?' checked':'')+'>';
-      return [tick, esc(r.V), esc(r.Cat), esc(r.K), r.Cnt, esc(r.Keep), esc(r.Drop), r.L]; });
+      var row = [tick, esc(r.V), esc(r.Cat), esc(r.K), r.Cnt, esc(r.Keep), esc(r.Drop), r.L];
+      if (multi) row.unshift(esc(r._dev));
+      return row; });
     var tOf = function (r){ return r.Cat; };
     typeCtx.dup = { typeOf: tOf, rows: rows };
     var bar = typeBar('dup', rows, tOf, null);
@@ -3910,6 +4131,62 @@
   // renders as visually DISTINCT parts (a badge-styled host.vdom tag,
   // separate from the name/value text), rather than relying on the bare
   // " :: " text separator alone to convey the structure.
+  // Per user request ("是不是 以關鍵字搜尋單一物件加入會找群組 解析並
+  // 加入 是有困難嗎?" -> "理論上 是CIDR有IP範圍碰到任何成員的就可以列入
+  // 清單"): flattens a 'firewall addrgrp' into the list of its members'
+  // own resolvable IP ranges, so resolveCidrToken (below) can offer the
+  // GROUP itself as a candidate whenever a pasted CIDR relates to ANY
+  // one of its members — mirroring the manual search box's own behavior
+  // (a keyword can already hit a group via its member NAMES showing up
+  // in describeObjValue's text; this is the equivalent for IP VALUES).
+  //
+  // Deliberately reuses ONLY already-exported Core functions
+  // (findObjByName/splitTokens/netCidr/cidrRange) — no core.js changes
+  // needed, since every piece this needs was already built (and
+  // exported) for interface-inference's own group-recursion logic
+  // (representativeIpsForRefOnDevice). This is a SEPARATE function
+  // rather than reusing that one directly because the two have opposite
+  // fail-safe requirements: representativeIpsForRefOnDevice returns null
+  // (ALL-OR-NOTHING) the instant ANY member can't be resolved, because
+  // it feeds an AUTOMATIC single-interface inference where one bad
+  // member should invalidate the whole answer. Here we're building a
+  // list of CANDIDATES for a human to review, so a group with 9
+  // resolvable members and 1 unresolvable one (e.g. an FQDN member, or
+  // a dangling reference) should still surface those 9 — omitting a
+  // real candidate would be the wrong failure direction (CLAUDE.md:
+  // "誤報一條要人工看" is fine; silently dropping a real match is not).
+  //
+  // Only 'firewall addrgrp' is covered — 'firewall vipgrp' members are
+  // VIPs (extip/mappedip, not subnet), a differently-shaped value with
+  // no equivalent notion of "the group's own address range"; left as a
+  // possible future extension rather than guessed at here.
+  function groupMemberCidrRanges(parsed, vdom, name, seen) {
+    seen = seen || {};
+    var seenKey = 'firewall addrgrp|' + name;
+    if (seen[seenKey]) return []; // cycle guard — nested/self-referencing groups
+    seen[seenKey] = true;
+    var grp = Core.findObjByName(parsed, vdom, 'firewall addrgrp', name);
+    if (!grp) return [];
+    var members = Core.splitTokens(grp.T['member'] || '');
+    var out = [];
+    members.forEach(function (m) {
+      var addr = Core.findObjByName(parsed, vdom, 'firewall address', m);
+      if (addr && addr.T && addr.T['subnet']) {
+        var cidr = Core.netCidr(addr.T['subnet']);
+        var range = Core.cidrRange(cidr);
+        if (range) out.push({ name: m, cidrValue: cidr, cidrRange: range });
+        return; // resolved (or unresolvable-kind) as a plain address — don't also try as a nested group
+      }
+      // not a plain subnet-type address — try as a NESTED group (FortiOS
+      // allows an addrgrp member to itself be another addrgrp); anything
+      // else (FQDN member, IP-range member, dangling/missing reference)
+      // is silently skipped here — partial result, not an abort.
+      var nested = Core.findObjByName(parsed, vdom, 'firewall addrgrp', m);
+      if (nested) out = out.concat(groupMemberCidrRanges(parsed, vdom, m, seen));
+    });
+    return out;
+  }
+
   function buildPicker(fieldName, sections) {
     var list = [];
     var idx = 0;
@@ -3960,6 +4237,17 @@
           var cv = Core.netCidr(o.T['subnet']);
           var cr = Core.cidrRange(cv);
           if (cr) { entry.cidrValue = cv; entry.cidrRange = cr; }
+        } else if (o.S === 'firewall addrgrp') {
+          // Per user clarification ("理論上 是CIDR有IP範圍碰到任何成員的
+          // 就可以列入清單"): a group has no IP value OF ITS OWN to
+          // compare a pasted CIDR against, but resolveCidrToken (below)
+          // should still be able to list it as a candidate whenever ANY
+          // of its members' own IP ranges relates to the pasted CIDR.
+          // Precompute that flattened member-range list here — same
+          // "compute once at buildPicker time, not per pasted line" idea
+          // entry.cidrRange already follows for plain addresses.
+          var mr = groupMemberCidrRanges(d.parsed, o.V, o.N);
+          if (mr.length) entry.memberRanges = mr;
         }
         policyPickerIndex[key] = entry;
         list.push(entry);
@@ -4220,53 +4508,27 @@
     return { label: '物件', color: '#1565c0' }; // plain address / service custom / ippool
   }
 
+  function pickerEntryLabelHtml(entry) {
+    var tagHtml = '';
+    if (entry.section) {
+      var tag = pickerKindTag(entry.section);
+      tagHtml = '<span class="polkind" style="background:' + tag.color + '">' + esc(tag.label) + '</span>';
+    }
+    if (entry.hostVdom) {
+      var hostVdomHtml = '<span class="polhostvdom"><span class="polhostpart">' + esc(entry.device) + '</span>' +
+        '<span class="polvdomdot">.</span><span class="polvdompart">' + esc(entry.vdom) + '</span></span>';
+      return tagHtml + hostVdomHtml + ' ' + esc(entry.nameValue);
+    }
+    return tagHtml + esc(entry.label);
+  }
+
   function pickerListHtml(fullList, filterText, selectedKey) {
     var r = filterPickerList(fullList, filterText);
     if (!fullList.length) return '<div class="polcombo-empty">此類別目前沒有任何物件可選</div>';
     if (!r.items.length) return '<div class="polcombo-empty">找不到符合「' + esc(filterText) + '」的物件</div>';
     var h = r.items.map(function (o) {
-      // o.section is present for address/service/schedule/nat-pool picks
-      // (see buildPicker) but absent for interface/zone picks (see
-      // buildIfacePicker, which has its own separate "any"-vs-real-
-      // interface distinction that doesn't need this color scheme) — the
-      // tag is simply omitted for those, rather than showing a
-      // meaningless/misleading color.
-      var tagHtml = '';
-      if (o.section) {
-        var tag = pickerKindTag(o.section);
-        tagHtml = '<span class="polkind" style="background:' + tag.color + '">' + esc(tag.label) + '</span>';
-      }
-      // Per user feedback ("選單的host跟vdom因為很重要...只有文字::分隔有
-      // 點難識別"): host.vdom now renders as its OWN visually distinct
-      // badge (monospace font, its own background/border — see the
-      // .polhostvdom CSS rule), separate from the object's name/value
-      // text, rather than being just another run of plain text before a
-      // literal "::" separator that's easy to skim past. Interface/zone
-      // picks (buildIfacePicker's entries) and the synthetic "any" entry
-      // (which has no .hostVdom at all) fall back to the bare label with
-      // no badge — "any" in particular has no host/vdom to badge in the
-      // first place.
-      if (o.hostVdom) {
-        // BUG FIXED HERE (per user report: "vdom最好也是可以一眼看出來"):
-        // the whole "device.vdom" string used to render as one flat run
-        // of monospace text — with a real device name that's often long
-        // (e.g. "SITE_FW_CORE_01"), the short vdom suffix (".root",
-        // ".AK2") visually disappeared into the tail of it; the eye had
-        // no cue to stop and read it separately. Splits the SAME badge
-        // into two inner spans using o.device/o.vdom directly (already
-        // stored as separate fields on the entry by buildPicker/
-        // buildIfacePicker — not re-parsed from the concatenated
-        // hostVdom string, which would be fragile if a device name ever
-        // legitimately contained a literal "."), with the vdom part
-        // given its own bolder, higher-contrast highlight chip WITHIN
-        // the badge — so vdom is now the part that visually pops,
-        // regardless of how long the device name is.
-        var hostVdomHtml = '<span class="polhostvdom"><span class="polhostpart">' + esc(o.device) + '</span>' +
-          '<span class="polvdomdot">.</span><span class="polvdompart">' + esc(o.vdom) + '</span></span>';
-        return '<div class="polcombo-item' + (o.key === selectedKey ? ' polcombo-item-sel' : '') + '" data-combo-key="' + esc(o.key) + '">' +
-          tagHtml + hostVdomHtml + ' ' + esc(o.nameValue) + '</div>';
-      }
-      return '<div class="polcombo-item' + (o.key === selectedKey ? ' polcombo-item-sel' : '') + '" data-combo-key="' + esc(o.key) + '">' + tagHtml + esc(o.label) + '</div>';
+      return '<div class="polcombo-item' + (o.key === selectedKey ? ' polcombo-item-sel' : '') + '" data-combo-key="' + esc(o.key) + '">' +
+        pickerEntryLabelHtml(o) + '</div>';
     }).join('');
     if (r.totalMatched > r.items.length) {
       h += '<div class="polcombo-more">還有 ' + (r.totalMatched - r.items.length) + ' 筆符合,請輸入更精確的關鍵字縮小範圍…</div>';
@@ -4481,6 +4743,12 @@
     if (rel === 'inputSubsetOfExisting') return '既有物件範圍較大,包含此輸入';
     if (rel === 'inputSupersetOfExisting') return '此輸入涵蓋此既有物件';
     if (rel === 'overlap') return '部分重疊';
+    // Per user clarification ("理論上 是CIDR有IP範圍碰到任何成員的就可
+    // 以列入清單"): a group candidate found via groupMemberCidrRanges
+    // (see resolveCidrToken) — the group ITSELF has no IP value, only
+    // its members do, so the label makes that indirection explicit
+    // rather than implying the group's own value matched.
+    if (rel === 'groupMember') return '透過群組成員命中';
     return rel || '';
   }
 
@@ -4533,10 +4801,40 @@
     var normCidr = Core.connectedNet(norm); // mask host bits off, e.g. "10.1.1.5/24" -> "10.1.1.0/24"
     var matches = [];
     (fullList || []).forEach(function (entry) {
-      if (!entry.cidrRange) return;
-      var rel = Core.classifyCidrRelation(range, entry.cidrRange);
-      if (rel && rel !== 'none') {
-        matches.push({ key: entry.key, hostVdom: entry.hostVdom, nameValue: entry.nameValue, cidrValue: entry.cidrValue, relation: rel });
+      if (entry.cidrRange) {
+        var rel = Core.classifyCidrRelation(range, entry.cidrRange);
+        if (rel && rel !== 'none') {
+          matches.push({ key: entry.key, hostVdom: entry.hostVdom, nameValue: entry.nameValue, cidrValue: entry.cidrValue, relation: rel });
+        }
+        return;
+      }
+      // Per user clarification ("理論上 是CIDR有IP範圍碰到任何成員的就
+      // 可以列入清單"): a group entry (see groupMemberCidrRanges, which
+      // populates entry.memberRanges) is offered as a candidate whenever
+      // ANY of its members' own ranges relates to the pasted CIDR — not
+      // just an exact value match. viaMembers records EVERY member that
+      // matched (not just the first), so renderCidrItem can show the
+      // user exactly which member(s) triggered this group's appearance.
+      if (entry.memberRanges && entry.memberRanges.length) {
+        var viaMembers = [];
+        entry.memberRanges.forEach(function (mr) {
+          var mrel = Core.classifyCidrRelation(range, mr.cidrRange);
+          if (mrel && mrel !== 'none') viaMembers.push({ name: mr.name, cidrValue: mr.cidrValue, relation: mrel });
+        });
+        if (viaMembers.length) {
+          // A group match is deliberately NEVER tagged relation:'equal'
+          // even when a member is an exact value match — see the
+          // 'exact.length===1' auto-select check right below this loop.
+          // Referencing a GROUP has a broader blast radius than
+          // referencing the single object a human actually meant (every
+          // OTHER member comes along too), so it must always require an
+          // explicit human decision, never auto-select the way a
+          // genuine single-object exact match can. Falls into the
+          // generic 'overlap' status bucket below, same as any other
+          // match needing manual review.
+          matches.push({ key: entry.key, hostVdom: entry.hostVdom, nameValue: entry.nameValue,
+            cidrValue: '(群組,' + viaMembers.length + ' 個成員相符)', relation: 'groupMember', viaMembers: viaMembers });
+        }
       }
     });
     var exact = matches.filter(function (m) { return m.relation === 'equal'; });
@@ -4829,9 +5127,23 @@
         var mKey = mEntry ? (mEntry.device + '\u001f' + mEntry.vdom) : null;
         if (lockedKey && mKey !== lockedKey && !checked) { hiddenCount++; return; }
         visibleCount++;
+        // Per user request ("可以參考 以關鍵字搜尋單一物件加入 的選單
+        // 再找到結果的 host vdom 物件類型 做視覺上的差異,如果能共用或
+        // 是一致當然是最好"): reuse pickerEntryLabelHtml — the SAME
+        // kind-tag + split host.vdom-badge markup the manual search
+        // combobox's suggestion list uses — instead of the plain
+        // "hostVdom :: nameValue" text this used to render, so a
+        // candidate found via pasted CIDR looks and reads identically to
+        // one found via keyword search.
+        var viaMembersHtml = (m.viaMembers && m.viaMembers.length)
+          ? '<div class="cidrviamembers">透過成員命中:' + m.viaMembers.map(function (vm) {
+              return '<code>' + esc(vm.name) + '</code>(' + esc(vm.cidrValue) + ' · ' + esc(cidrRelationLabel(vm.relation)) + ')';
+            }).join('、') + '</div>'
+          : '';
         detail += '<label class="cidrmatch"><input type="checkbox"' + (checked ? ' checked' : '') +
           ' data-cidr-toggle="' + fieldName + ':' + idx + ':' + m.key + '"> ' +
-          esc(m.hostVdom) + ' :: ' + esc(m.nameValue) + ' <i>(' + esc(cidrRelationLabel(m.relation)) + ')</i></label>';
+          (mEntry ? pickerEntryLabelHtml(mEntry) : (esc(m.hostVdom) + ' :: ' + esc(m.nameValue))) +
+          ' <i>(' + esc(cidrRelationLabel(m.relation)) + ')</i></label>' + viaMembersHtml;
       });
       if (hiddenCount > 0) {
         detail += '<div class="cidrhiddennote">已排除 ' + hiddenCount + ' 個不同 host/vdom 的候選(與已鎖定範圍不符)</div>';
@@ -5739,6 +6051,23 @@
   function closeDetail() { document.getElementById('modal').style.display = 'none'; }
 
   // ---------- CLI generation from ticked rows ----------
+  function hostScopedRecs(recs) {
+    var scoped = (curDev !== '_') ? recs.filter(function (r){ return r._dev === curDev; }) : recs;
+    var hosts = [];
+    scoped.forEach(function (r){ if (hosts.indexOf(r._dev) < 0) hosts.push(r._dev); });
+    if (hosts.length > 1) return { ok:false, hosts:hosts };
+    return { ok:true, host: hosts[0] || curDev || (DEVICES[0] && DEVICES[0].label) || '', recs: scoped };
+  }
+  function crossHostMessage(hosts) {
+    return '# 目前勾選的項目橫跨 ' + hosts.length + ' 台不同設備:\n' +
+      hosts.map(function (h){ return '#   - ' + h; }).join('\n') + '\n#\n' +
+      '# 不同設備的 CLI 無法合併成單一可貼上的內容 —— 物件名稱、行號、\n' +
+      '# 參照關係都只屬於各自的設備,合併後貼到任何一台都會是錯的。\n' +
+      '#\n' +
+      '# 請在左側裝置樹選擇「其中一台」設備聚焦,這裡就會自動只顯示\n' +
+      '# 該設備已勾選項目所產生的 CLI(其他設備上的勾選仍會保留,\n' +
+      '# 切換回該設備時照樣看得到)。';
+  }
   function regenCli() {
     var bar = document.getElementById('clibar');
     var ta = document.getElementById('cliout');
@@ -5750,22 +6079,28 @@
     bar.style.display = '';
     var vm = A.vdomMode;
     if (curTab === 'comp') {
-      var recs = A.comp.filter(function (r){ return sel.comp.has(r._id) && !r.Pass && !r.Skip; });
-      if (!recs.length) { ta.value = '# Tick failing rows to build remediation CLI.'; lbl.textContent = 'Remediation CLI'; return; }
-      ta.value = Core.buildFixCli(recs, vm);
-      lbl.textContent = 'Remediation CLI — ' + recs.length + ' finding(s)';
+      var ticked = A.comp.filter(function (r){ return sel.comp.has(r._id) && !r.Pass && !r.Skip; });
+      var hs = hostScopedRecs(ticked);
+      if (!hs.ok) { ta.value = crossHostMessage(hs.hosts); lbl.textContent = 'Remediation CLI — 橫跨 ' + hs.hosts.length + ' 台設備,請選擇一台'; return; }
+      if (!hs.recs.length) { ta.value = '# Tick failing rows to build remediation CLI.'; lbl.textContent = 'Remediation CLI'; return; }
+      ta.value = Core.buildFixCli(hs.recs, vm);
+      lbl.textContent = 'Remediation CLI — ' + hs.host + ' — ' + hs.recs.length + ' finding(s)';
     } else if (curTab === 'safe') {
-      var recs2 = A.clean.safe.filter(function (r){ return sel.safe.has(r._id); });
-      if (!recs2.length) { ta.value = '# Tick objects to build the cleanup CLI.'; lbl.textContent = 'Cleanup CLI'; return; }
-      ta.value = Core.buildSafeCli(recs2, vm);
-      lbl.textContent = 'Cleanup CLI — ' + recs2.length + ' object(s)';
+      var ticked2 = A.clean.safe.filter(function (r){ return sel.safe.has(r._id); });
+      var hs2 = hostScopedRecs(ticked2);
+      if (!hs2.ok) { ta.value = crossHostMessage(hs2.hosts); lbl.textContent = 'Cleanup CLI — 橫跨 ' + hs2.hosts.length + ' 台設備,請選擇一台'; return; }
+      if (!hs2.recs.length) { ta.value = '# Tick objects to build the cleanup CLI.'; lbl.textContent = 'Cleanup CLI'; return; }
+      ta.value = Core.buildSafeCli(hs2.recs, vm);
+      lbl.textContent = 'Cleanup CLI — ' + hs2.host + ' — ' + hs2.recs.length + ' object(s)';
     } else {
-      var recs3 = A.dups.filter(function (r){ return sel.dup.has(r._id); });
-      if (!recs3.length) { ta.value = '# Tick duplicate groups to build the merge plan.'; lbl.textContent = 'Merge plan'; return; }
-      var dvc = curDevice() || DEVICES[0];
+      var ticked3 = A.dups.filter(function (r){ return sel.dup.has(r._id); });
+      var hs3 = hostScopedRecs(ticked3);
+      if (!hs3.ok) { ta.value = crossHostMessage(hs3.hosts); lbl.textContent = 'Merge plan — 橫跨 ' + hs3.hosts.length + ' 台設備,請選擇一台'; return; }
+      if (!hs3.recs.length) { ta.value = '# Tick duplicate groups to build the merge plan.'; lbl.textContent = 'Merge plan'; return; }
+      var dvc = DEVICES.filter(function (d){ return d.label === hs3.host; })[0] || curDevice() || DEVICES[0];
       var usedBy = dvc.usedBy || (dvc.usedBy = Core.buildUsedBy(dvc.parsed));
-      ta.value = Core.buildDecideCli(recs3, vm, usedBy);
-      lbl.textContent = 'Merge plan — ' + recs3.length + ' group(s)';
+      ta.value = Core.buildDecideCli(hs3.recs, vm, usedBy);
+      lbl.textContent = 'Merge plan — ' + hs3.host + ' — ' + hs3.recs.length + ' group(s)';
     }
   }
   function tickAll(on) {
@@ -5845,6 +6180,12 @@
   }
   function download(name, text) {
     var blob = new Blob([text], {type:'text/csv;charset=utf-8'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+  }
+  function downloadJson(name, obj) {
+    var blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json;charset=utf-8'});
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = name; a.click();
     setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
@@ -5929,7 +6270,14 @@
     r.readAsText(file);
   }
   function readFiles(fileList) {
-    Array.prototype.slice.call(fileList).forEach(function (f){ readFile(f); });
+    var files = Array.prototype.slice.call(fileList);
+    var jsonFiles = files.filter(function (f){ return /\.json$/i.test(f.name); });
+    var confFiles = files.filter(function (f){ return !/\.json$/i.test(f.name); });
+    if (jsonFiles.length) {
+      importRulePackFile(jsonFiles[0]);
+      if (jsonFiles.length > 1) setStatus('偵測到多個 .json 檔,僅處理第一個:' + jsonFiles[0].name);
+    }
+    confFiles.forEach(function (f){ readFile(f); });
   }
   // shows a "pick a device" note on the network tabs (interfaces/vpn/matrix/services) when the merged view is active
   function needDevice(panelId, title) {
@@ -5961,6 +6309,12 @@
     });
     document.getElementById('btnOpen').onclick = function(){ picker.click(); };
     document.getElementById('btnCsv').onclick = exportCsv;
+    var rulePicker = document.getElementById('rulePicker');
+    document.getElementById('btnImportRules').onclick = function(){ rulePicker.click(); };
+    rulePicker.onchange = function(){ if (rulePicker.files.length) importRulePackFile(rulePicker.files[0]); rulePicker.value=''; };
+    document.getElementById('btnExportRules').onclick = exportRulePack;
+    document.getElementById('btnResetRules').onclick = resetToBuiltinRules;
+    updateRuleBadge();
     document.getElementById('chkPass').onchange = function(){ savePrefs(); if (A) renderComp(); };
     document.getElementById('chkCross').onchange = function(){ savePrefs();
       if (DEVICES.length) reanalyzeAll(); };
@@ -6040,6 +6394,10 @@
     document.addEventListener('keydown', function (e){
       if (e.key === 'Escape') closeDetail();
     });
+    document.body.addEventListener('click', function (e){
+      if (e.target && e.target.id === 'btnRpApply') { applyPendingImport(); return; }
+      if (e.target && e.target.id === 'btnRpCancel') { cancelPendingImport(); return; }
+    });
     // checkbox delegation for tick selection
     document.body.addEventListener('change', function (e){
       var el = e.target;
@@ -6100,3 +6458,4 @@
 </script>
 </body>
 </html>
+
