@@ -229,6 +229,18 @@
   .cidrminibtn { align-self: flex-start; padding: 2px 9px; font-size: 11.5px; border: 1px solid #9db8e6;
     background: #eef3fb; color: #1b4bab; border-radius: 10px; cursor: pointer; }
   .cidrminibtn:hover { background: #dde9fb; }
+  /* Per user request ("點選了某個 object 之後,可以直接把其他台
+     host/vdom 都排除掉,包含 textarea 內全部找到的候選"): once any
+     existing-object candidate is chosen for this field, every OTHER
+     candidate belonging to a different device/vdom — across every
+     pasted line AND the manual search box — is hidden (see
+     fieldLockedKey/scopeListToLock in the script). This badge is the
+     only visible sign that filtering is happening, plus a one-click way
+     to clear it again. */
+  .cidrlock { display: flex; align-items: center; gap: 8px; padding: 5px 9px; margin-bottom: 8px;
+    background: #fff7e0; border: 1px solid #e6c85a; border-radius: 6px; font-size: 12px; color: #6b5300; }
+  .cidrlock code { font-family: Consolas, monospace; font-weight: 700; }
+  .cidrhiddennote { color: #9aa0ab; font-size: 11px; font-style: italic; }
   th.sorth:hover { background: #e4e6ea; }
   th.sorth .arr { color: #3b73d6; font-size: 10px; }
   .typebar { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 12px; }
@@ -4538,6 +4550,199 @@
     return { raw: raw, cidr: normCidr, status: status, matches: matches, chosenKeys: chosenKeys, createNew: createNew };
   }
 
+  // Per user request ("我們的解析並加入的查找是跨很多host...點選了某個
+  // object 之後,可以直接把其他台 host vdom 都排除掉,包含 textarea 內
+  // 全部找到的候選"): FortiOS requires every object referenced by ONE
+  // field (Source, or Destination) of ONE policy to live in the SAME
+  // device+vdom — a policy is defined within one vdom, and its
+  // srcaddr/dstaddr list can only reference objects that exist there.
+  // So the moment the user confirms even ONE existing-object candidate
+  // for this field, every OTHER candidate that belongs to a DIFFERENT
+  // device+vdom — whether it's another match under the SAME pasted
+  // line, a match under a DIFFERENT pasted line, or an entry in the
+  // manual search box's own suggestion list — can never legitimately
+  // be picked too, so it's filtered out rather than left sitting there
+  // as a false choice the user could still click.
+  //
+  // Deliberately a PURE, RECOMPUTED-EVERY-RENDER function rather than a
+  // separately-stored "locked" flag: the lock is simply "does any item
+  // in this field currently have a chosenKeys pick", derived fresh each
+  // time from state that already exists. That is what makes "unlocking"
+  // trivial and safe — clearing every chosenKeys (see the
+  // data-cidr-unlock handler) makes this function naturally return null
+  // again next render, with nothing extra to reset or resynchronize.
+  // Returns the FIRST confirmed existing-object pick found among a
+  // src/dst field's own items (or null if nothing is confirmed yet) —
+  // the single shared lookup fieldLockedKey (below) derives the lock
+  // key from, and maybeAutoFillIntfFromField (further below) uses as
+  // its representative sample for the Srcintf/Dstintf preview. Kept as
+  // one function per CLAUDE.md's SSOT principle — before this, the
+  // exact same "walk items, find the first chosenKeys[0], look it up
+  // in policyPickerIndex" loop was duplicated wherever a locked pick
+  // was needed; picking "first found" is safe for BOTH callers for the
+  // same underlying reason: fieldLockedKey only needs A device+vdom (by
+  // construction every OTHER confirmed pick in this field is on that
+  // SAME device+vdom, since that's exactly what the lock enforces), and
+  // the interface auto-fill is only ever a PREVIEW anyway (real
+  // generation re-infers per-target — see resolvePolicyForTarget).
+  function pickRepresentativeEntry(f) {
+    var items = (f && f.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      var ck = items[i].chosenKeys;
+      if (ck && ck.length) {
+        var e = policyPickerIndex[ck[0]];
+        if (e && e.device && e.vdom) return e;
+      }
+    }
+    return null;
+  }
+  function fieldLockedKey(f) {
+    var e = pickRepresentativeEntry(f);
+    return e ? (e.device + '\u001f' + e.vdom) : null;
+  }
+  // Narrows a candidate list down to just the locked device+vdom (a
+  // no-op, returning the list unchanged, whenever nothing is locked
+  // yet) — the SAME filtered list is reused for the manual search
+  // combobox's suggestions AND as the pool a newly-pasted CIDR/IP is
+  // resolved against (see parseCidrPasteInto, which reads
+  // policyPickerFullList[fieldName] — populated with this SCOPED list
+  // by renderAddrField below), so a fresh paste made after locking can
+  // only ever resolve to (or offer) objects on the locked device+vdom.
+  function scopeListToLock(list, lockedKey) {
+    if (!lockedKey) return list;
+    return list.filter(function (e) { return e.device && e.vdom && (e.device + '\u001f' + e.vdom) === lockedKey; });
+  }
+
+  // Per user request ("如果點選了第一個完全相符 也可以把後續的自動選
+  // 取"): once the field is locked to one device+vdom (whether that
+  // lock came from a single unambiguous 'exact' match resolving itself,
+  // or from the user manually confirming one candidate of an ambiguous
+  // line), any OTHER still-undecided line whose own matches include
+  // EXACTLY ONE equal-value object on that SAME locked device+vdom is
+  // no longer genuinely ambiguous either — the only reason it looked
+  // ambiguous ('exactMulti': the same value duplicated under different
+  // names on different devices) was not yet knowing which device/vdom
+  // this field must resolve to; now that a sibling line has pinned that
+  // down, at most one of its own same-value duplicates could ever be
+  // legal here anyway. Auto-confirming that sole survivor removes a
+  // redundant manual click per line once the first exact match is
+  // settled, without weakening any actual safety check:
+  //   - only relation 'equal' (an exact value match) is ever
+  //     auto-picked this way — 'overlap' / 'inputSubsetOfExisting' /
+  //     'inputSupersetOfExisting' relations still ALWAYS require a
+  //     human decision regardless of locking, since accepting one of
+  //     those silently WIDENS or NARROWS scope from what was actually
+  //     typed, exactly the surprise CLAUDE.md's fail-safe direction
+  //     guards against — locking only ever disambiguates "which
+  //     same-value duplicate", never substitutes a different-value
+  //     network relationship for what the user pasted.
+  //   - an item that's 'invalid', already has its own chosenKeys, or is
+  //     marked createNew is left alone — this only ever fills in a
+  //     still-blank decision, never overrides or second-guesses one a
+  //     human (or an earlier auto-resolution) already made.
+  function autoNarrowItem(item, lockedKey) {
+    if (!lockedKey || !item) return false;
+    if (item.status === 'invalid' || item.createNew) return false;
+    if (item.chosenKeys && item.chosenKeys.length) return false;
+    var inScope = (item.matches || []).filter(function (m) {
+      var e = policyPickerIndex[m.key];
+      return e && e.device && e.vdom && (e.device + '\u001f' + e.vdom) === lockedKey && m.relation === 'equal';
+    });
+    if (inScope.length === 1) { item.chosenKeys = [inScope[0].key]; return true; }
+    return false;
+  }
+  // Runs autoNarrowItem over EVERY item currently in a field, using
+  // whatever device+vdom lock holds right now (see fieldLockedKey) —
+  // called after any action that could newly establish or change that
+  // lock (confirming a candidate, select-all, a fresh manual pick, or a
+  // fresh paste), so every sibling line benefits immediately, not just
+  // ones added after the lock already existed.
+  function autoNarrowFieldItems(fieldName) {
+    var f = policyState[fieldName];
+    var lockedKey = fieldLockedKey(f);
+    if (!lockedKey || !f || !f.items) return;
+    f.items.forEach(function (it) { autoNarrowItem(it, lockedKey); });
+  }
+
+  // Per user follow-up ("在這個邏輯下 就能接到單選的判斷Srcintf
+  // Dstintf了"): once a src/dst field resolves down to ONE confirmed
+  // existing-object pick (via pickRepresentativeEntry — the exact same
+  // notion fieldLockedKey/the lock UI already use), that's enough
+  // information to run the SAME Srcintf/Dstintf auto-fill judgment that
+  // used to only ever fire from one specific place (a manual combobox
+  // click — see the .polcombo-item handler's old inline version of
+  // this). Generalizing it into one function callable from EVERY path
+  // that can newly resolve a pick (manual search pick, a checkbox
+  // toggle, "全選既有物件", or a sibling line getting auto-narrowed by
+  // autoNarrowFieldItems) means the interface suggestion now behaves
+  // consistently no matter HOW the user arrived at a confirmed pick,
+  // instead of only working for the one specific flow it was original
+  // wired to.
+  //
+  // BUG FOUND & FIXED HERE while doing this generalization: the
+  // VIP-extintf-constrains-Srcintf preview (see core.js's
+  // vipExtIntfConstraintForRef's own big comment — a VIP/vipgrp picked
+  // as Destination with a specific extintf authoritatively pins
+  // Srcintf, not just suggests it) used to live ONLY inside the
+  // combobox click handler's "single-select field" else-branch — which
+  // handles service/schedule/nat/interface picks. Ever since the
+  // Source/Destination multi-select redesign routed EVERY dst
+  // existing-object pick (VIP included) through the DEDICATED src/dst
+  // branch instead, that else-branch became unreachable for dst — so
+  // that VIP check silently stopped running for any dst pick made via
+  // the manual search box. This was not merely a missed on-screen
+  // preview: core.js's resolveIntf only ever APPLIES the VIP constraint
+  // when intent.srcintfAuto is true (see resolvePolicyForTarget), and
+  // nothing on the (now sole) dst-pick code path was ever setting
+  // policyState.srcintf.auto — so the REAL generated CLI was silently
+  // missing the VIP-mandated Srcintf too, not just its preview.
+  // Consolidating both checks into this one function, called from
+  // every pick-resolving path, fixes both at once instead of leaving a
+  // second, easily-forgotten place that needed the same fix.
+  function maybeAutoFillIntfFromField(fieldName) {
+    var ifaceKeyName = ifaceFieldNameFor(fieldName);
+    if (!ifaceKeyName) return;
+    var entry = pickRepresentativeEntry(policyState[fieldName]);
+    if (!entry) return;
+    var devEntry = DEVICES.filter(function (d) { return d.label === entry.device; })[0];
+    if (!devEntry) return;
+    if (!policyState[ifaceKeyName].userTouched) {
+      policyState[ifaceKeyName].auto = true;
+      var inferred = autoFillIfaceValue(fieldName, policyState[fieldName], entry, policyState[ifaceKeyName],
+        function (vdom, section, name) { return Core.inferInterfaceForRef(devEntry.parsed, vdom, section, name, {}); });
+      if (inferred) policyState[ifaceKeyName].value = inferred;
+    }
+    // VIP/vipgrp picked as Destination: its own extintf (when a specific
+    // interface, not "any") authoritatively constrains SRCINTF — see
+    // core.js's vipExtIntfConstraintForRef. Only ever touches srcintf
+    // (never dstintf), and never overwrites a Srcintf the user has
+    // already explicitly set themselves.
+    if (fieldName === 'dst' && (entry.section === 'firewall vip' || entry.section === 'firewall vipgrp')
+        && !policyState.srcintf.userTouched) {
+      var allDevicesByLabelPreview = {};
+      DEVICES.forEach(function (d) { allDevicesByLabelPreview[d.label] = d.parsed; });
+      var vipRef = { mode: 'existing', section: entry.section, name: entry.name,
+        sourceDevice: entry.device, sourceVdom: entry.vdom };
+      var vipConstraintPreview = Core.vipExtIntfConstraintForRef(vipRef, allDevicesByLabelPreview);
+      if (vipConstraintPreview) {
+        policyState.srcintf.auto = true;
+        policyState.srcintf.value = vipConstraintPreview;
+      }
+    }
+  }
+
+  // Single entry point every src/dst pick-changing action should call:
+  // narrows sibling ambiguous lines against the field's own lock, THEN
+  // (re)runs the Srcintf/Dstintf auto-fill judgment against whatever
+  // pick now represents that lock. Bundled together — rather than
+  // requiring every call site to remember both calls separately — so a
+  // future new way of resolving a src/dst pick can't accidentally wire
+  // up only one of the two.
+  function syncFieldPickEffects(fieldName) {
+    autoNarrowFieldItems(fieldName);
+    maybeAutoFillIntfFromField(fieldName);
+  }
+
   // Parses the field's current pasteText textarea into one new item PER
   // line, appended to the field's own `items` array (never replacing
   // what's already there — a second paste adds to the list, matching
@@ -4554,6 +4759,17 @@
       var item = resolveCidrToken(tok, fullList);
       if (item) f.items.push(item);
     });
+    // Narrows every still-ambiguous item — old ones AND the ones just
+    // pushed above — against whatever lock now holds for this field,
+    // then re-runs the Srcintf/Dstintf auto-fill judgment against
+    // whichever pick now represents that lock (see
+    // syncFieldPickEffects). Covers both "an earlier LINE IN THIS SAME
+    // PASTE turned out to be the single exact match that locks
+    // everything" (fullList was still unscoped when THAT line resolved,
+    // since no lock existed yet at the top of this function) and "a
+    // lock already existed from an earlier confirmed pick before this
+    // paste even started".
+    syncFieldPickEffects(fieldName);
     f.pasteText = '';
   }
 
@@ -4578,9 +4794,26 @@
   // user can pick exactly which one(s) to include), plus a "改為建立新
   // 物件" fallback checkbox for when none of the candidates are actually
   // the right choice.
-  function renderCidrItem(fieldName, idx, item) {
+  // lockedKey (from fieldLockedKey — null when nothing is picked yet in
+  // this field) hides any candidate that belongs to a DIFFERENT
+  // device+vdom than the one already locked in, rather than leaving it
+  // clickable as a choice that could never actually be deployed
+  // together with what's already picked. An already-CHECKED candidate
+  // is always shown regardless (it's how the lock itself got set), and
+  // "改為建立新物件" is never hidden — creating a brand-new object isn't
+  // tied to any particular existing device/vdom, so it stays valid no
+  // matter what's locked.
+  function renderCidrItem(fieldName, idx, item, lockedKey) {
+    // item.status stays whatever resolveCidrToken originally computed
+    // (e.g. 'exactMulti') even after autoNarrowFieldItems fills in
+    // chosenKeys — this extra badge is what tells the user THIS
+    // particular ambiguous-looking line was actually auto-resolved by
+    // the lock, not something they need to double-check themselves.
+    var autoNarrowed = item.status !== 'exact' && item.status !== 'invalid' && item.status !== 'notFound'
+      && item.chosenKeys && item.chosenKeys.length === 1;
     var head = '<code>' + esc(item.raw) + '</code> ' +
       '<span class="cidribadge cidr-' + item.status + '">' + esc(cidrStatusLabel(item.status, item.matches.length)) + '</span>' +
+      (autoNarrowed ? '<span class="cidribadge cidr-exact" title="依已鎖定的 host/vdom 自動選定,原本相同值的其他物件在別台/別 vdom">✓ 已依鎖定自動選定</span>' : '') +
       '<button type="button" class="cidrx" data-cidr-remove="' + fieldName + ':' + idx + '" title="移除">✕</button>';
     var detail = '';
     if (item.status === 'invalid') {
@@ -4589,13 +4822,21 @@
       detail = '<div class="cidrdetail hint">將建立新物件:<b>' + esc(item.cidr) + '</b></div>';
     } else {
       detail = '<div class="cidrdetail">';
+      var visibleCount = 0, hiddenCount = 0;
       item.matches.forEach(function (m) {
         var checked = item.chosenKeys.indexOf(m.key) >= 0;
+        var mEntry = policyPickerIndex[m.key];
+        var mKey = mEntry ? (mEntry.device + '\u001f' + mEntry.vdom) : null;
+        if (lockedKey && mKey !== lockedKey && !checked) { hiddenCount++; return; }
+        visibleCount++;
         detail += '<label class="cidrmatch"><input type="checkbox"' + (checked ? ' checked' : '') +
           ' data-cidr-toggle="' + fieldName + ':' + idx + ':' + m.key + '"> ' +
           esc(m.hostVdom) + ' :: ' + esc(m.nameValue) + ' <i>(' + esc(cidrRelationLabel(m.relation)) + ')</i></label>';
       });
-      if (item.matches.length > 1) {
+      if (hiddenCount > 0) {
+        detail += '<div class="cidrhiddennote">已排除 ' + hiddenCount + ' 個不同 host/vdom 的候選(與已鎖定範圍不符)</div>';
+      }
+      if (visibleCount > 1) {
         detail += '<button type="button" class="cidrminibtn" data-cidr-selectall="' + fieldName + ':' + idx + '">全選既有物件</button>';
       }
       detail += '<label class="cidrmatch"><input type="checkbox"' + (item.createNew ? ' checked' : '') +
@@ -4607,7 +4848,20 @@
 
   function renderAddrField(fieldName, label, sections) {
     var f = policyState[fieldName];
-    var list = buildPicker(fieldName, sections || ADDR_SECTIONS);
+    var rawList = buildPicker(fieldName, sections || ADDR_SECTIONS);
+    // lockedKey must be computed AFTER buildPicker (it populates
+    // policyPickerIndex for this field's own keys, which fieldLockedKey
+    // looks up chosenKeys against) — see fieldLockedKey's own comment
+    // for why this is a derived value, not stored state.
+    var lockedKey = fieldLockedKey(f);
+    var list = scopeListToLock(rawList, lockedKey);
+    // policyPickerFullList[fieldName] intentionally stores the SCOPED
+    // (not raw) list: it's what the manual search combobox's live
+    // keystroke-filter and focus-open both read from (see
+    // renderComboListInto's callers), and what parseCidrPasteInto reads
+    // to resolve a freshly-pasted CIDR/IP — so once locked, BOTH of
+    // those paths automatically only see/offer the locked device+vdom's
+    // own objects too, with no separate wiring needed.
     policyPickerFullList[fieldName] = list;
     var body = '<label><input type="radio" name="' + fieldName + 'mode" data-field="' + fieldName + '.mode" value="builtin"' + (f.mode === 'builtin' ? ' checked' : '') + '> 全部 (all)</label>' +
       '<label><input type="radio" name="' + fieldName + 'mode" data-field="' + fieldName + '.mode" value="existing"' + (f.mode === 'existing' ? ' checked' : '') + '> 既有物件</label>' +
@@ -4633,14 +4887,25 @@
       // unchanged in spirit, as a quick way to add ONE more object by
       // name without needing its literal CIDR value — but it now ADDS to
       // the same list instead of replacing a single selection.
-      var chipsHtml = (f.items || []).map(function (it, idx) { return renderCidrItem(fieldName, idx, it); }).join('');
+      var chipsHtml = (f.items || []).map(function (it, idx) { return renderCidrItem(fieldName, idx, it, lockedKey); }).join('');
+      // Per user request: once locked, show WHICH device.vdom it's
+      // locked to and offer a one-click way out — "解除鎖定" simply
+      // clears every chosenKeys in this field (nothing else needs to
+      // reset; see fieldLockedKey's comment), which is enough to make
+      // every hidden candidate reappear on the very next render.
+      var lockNote = lockedKey
+        ? '<div class="cidrlock">🔒 已鎖定於 <code>' + esc(lockedKey.replace('\u001f', ' . ')) + '</code>'
+          + ' — 其餘 host/vdom 的候選(含尚未解析的貼上內容)已自動排除'
+          + '<button type="button" class="cidrminibtn" data-cidr-unlock="' + fieldName + '">清除已選以解鎖</button></div>'
+        : '';
       body += '<div class="polsub">' +
         '<div class="cidrpastewrap">' +
           '<textarea class="cidrpaste" rows="3" placeholder="貼上多個 CIDR/IP,一行一個,例如:&#10;192.168.1.1/32&#10;192.168.1.2/32&#10;192.168.100.0/24" data-field="' + fieldName + '.pasteText">' + esc(f.pasteText || '') + '</textarea>' +
           '<button type="button" class="cidrparsebtn" data-cidr-parse="' + fieldName + '">解析並加入 ↓</button>' +
         '</div>' +
+        lockNote +
         '<div class="cidritems">' + (chipsHtml || '<span class="hint">尚未加入任何物件 — 貼上 CIDR 清單解析,或用下方搜尋逐一加入。</span>') + '</div>' +
-        '<div class="hint">以關鍵字搜尋單一物件加入:</div>' +
+        '<div class="hint">以關鍵字搜尋單一物件加入' + (lockedKey ? '(僅列出已鎖定 host/vdom 的物件)' : '') + ':</div>' +
         comboboxHtml(fieldName, list, f) +
         '<div class="hint">每一個實際被選用的既有物件,其所在裝置.vdom 都會列為必要部署目標(不可取消)。' + vipNote + '</div></div>';
     } else if (f.mode === 'new') {
@@ -4937,6 +5202,14 @@
           if (!el.checked && pos >= 0) togItem.chosenKeys.splice(pos, 1);
           if (el.checked) togItem.createNew = false;
         }
+        // this toggle may be exactly what just established (or changed)
+        // this field's lock — immediately narrow every OTHER
+        // still-undecided sibling line against it (see
+        // autoNarrowFieldItems's own big comment for why only same-
+        // value 'equal' duplicates are ever auto-resolved this way),
+        // and re-run the Srcintf/Dstintf auto-fill judgment too (see
+        // syncFieldPickEffects).
+        syncFieldPickEffects(togParts[0]);
         renderPolicyBuilder();
         return;
       }
@@ -5151,8 +5424,43 @@
       var saBtn = e.target && e.target.closest ? e.target.closest('[data-cidr-selectall]') : null;
       if (saBtn) {
         var saParts = saBtn.getAttribute('data-cidr-selectall').split(':');
-        var saItem = policyState[saParts[0]].items[parseInt(saParts[1], 10)];
-        if (saItem) { saItem.chosenKeys = saItem.matches.map(function (m) { return m.key; }); saItem.createNew = false; }
+        var saField = saParts[0];
+        var saItem = policyState[saField].items[parseInt(saParts[1], 10)];
+        if (saItem) {
+          // "全選既有物件" must only select candidates that are actually
+          // VISIBLE (i.e. within the field's own lock, if any) — a match
+          // hidden by fieldLockedKey is hidden precisely because it
+          // can't legitimately be combined with what's already picked,
+          // so blindly selecting item.matches wholesale would silently
+          // reintroduce the exact cross-vdom mix this whole feature
+          // exists to prevent.
+          var saLockedKey = fieldLockedKey(policyState[saField]);
+          var saAllowed = saItem.matches.filter(function (m) {
+            if (!saLockedKey) return true;
+            var e2 = policyPickerIndex[m.key];
+            return e2 && (e2.device + '\u001f' + e2.vdom) === saLockedKey;
+          });
+          saItem.chosenKeys = saAllowed.map(function (m) { return m.key; });
+          saItem.createNew = false;
+        }
+        // this select-all may itself be what just formed the field's
+        // lock (e.g. its own item was 'exactMulti' with all candidates
+        // on one device+vdom) — narrow any OTHER sibling line, and
+        // re-run the Srcintf/Dstintf auto-fill judgment, too.
+        syncFieldPickEffects(saField);
+        renderPolicyBuilder();
+        return;
+      }
+      // Per user request: a one-click way to clear a locked field back
+      // to "nothing picked yet" — clears every item's chosenKeys (never
+      // removes the items themselves, and never touches createNew
+      // flags, which aren't part of the lock) so every previously
+      // hidden cross-host/vdom candidate becomes selectable again on
+      // the very next render.
+      var unlockBtn = e.target && e.target.closest ? e.target.closest('[data-cidr-unlock]') : null;
+      if (unlockBtn) {
+        var ufield = unlockBtn.getAttribute('data-cidr-unlock');
+        (policyState[ufield].items || []).forEach(function (it) { it.chosenKeys = []; });
         renderPolicyBuilder();
         return;
       }
@@ -5189,16 +5497,14 @@
             // ultimately gets deployed.
             addExistingPickToField(comboField2, clickedKey, pickedEntry);
             policyState[comboField2].comboOpen = false;
-            var ifaceKeyNameM = ifaceFieldNameFor(comboField2);
-            if (ifaceKeyNameM && !policyState[ifaceKeyNameM].userTouched) {
-              policyState[ifaceKeyNameM].auto = true;
-              var srcDevEntryM = DEVICES.filter(function (d) { return d.label === pickedEntry.device; })[0];
-              if (srcDevEntryM) {
-                var inferredIfaceM = autoFillIfaceValue(comboField2, policyState[comboField2], pickedEntry, policyState[ifaceKeyNameM],
-                  function (vdom, section, name) { return Core.inferInterfaceForRef(srcDevEntryM.parsed, vdom, section, name, {}); });
-                if (inferredIfaceM) policyState[ifaceKeyNameM].value = inferredIfaceM;
-              }
-            }
+            // this manual pick may itself be the very first confirmed
+            // candidate that establishes the field's lock — immediately
+            // narrow any OTHER already-pasted, still-ambiguous line, and
+            // re-run the Srcintf/Dstintf auto-fill judgment (now also
+            // covering the VIP-extintf-constrains-Srcintf case — see
+            // maybeAutoFillIntfFromField's own big comment for the bug
+            // this consolidation fixed).
+            syncFieldPickEffects(comboField2);
             renderPolicyBuilder();
           } else {
             policyState[comboField2].pickerKey = clickedKey;
@@ -5218,63 +5524,17 @@
             // automatically and consistently, from one single source of
             // truth instead of two separate mechanisms that could drift
             // out of sync with each other.
-            // Per a further user request: also auto-suggest the matching
-            // Srcintf/Dstintf by inferring which of the picked object's
-            // OWN device's connected interfaces the address actually
-            // falls on (see Core.inferInterfaceForRef's extensive
-            // fail-safe-direction comment in core.js — this only ever
-            // fires when the answer is completely unambiguous, and only
-            // if the user hasn't already manually set that interface
-            // field themselves).
-            var ifaceKeyName = ifaceFieldNameFor(comboField2);
-            if (ifaceKeyName && !policyState[ifaceKeyName].userTouched) {
-              // Per a further user request ("Source Destination 如果是不同
-              // 兩台...就算是多台也可能lookup到對的介面"): entering "auto"
-              // mode here is what makes generatePolicyCli re-infer the
-              // interface FRESH for EACH deployment target at CLI-
-              // generation time (see core.js's resolvePolicyForTarget),
-              // rather than freezing whatever this SINGLE-device preview
-              // happens to show right now. `auto` is set true regardless
-              // of whether THIS PARTICULAR pick's own single-device
-              // preview below succeeds — even if the picked object
-              // doesn't resolve cleanly against ITS OWN device (rare, but
-              // possible), the field should still stay in auto mode so a
-              // later "產生 CLI" click re-evaluates against whatever
-              // devices actually get checked as deployment targets.
-              policyState[ifaceKeyName].auto = true;
-              var srcDevEntry = DEVICES.filter(function (d) { return d.label === pickedEntry.device; })[0];
-              if (srcDevEntry) {
-                var inferredIface = autoFillIfaceValue(comboField2, policyState[comboField2], pickedEntry, policyState[ifaceKeyName],
-                  function (vdom, section, name) { return Core.inferInterfaceForRef(srcDevEntry.parsed, vdom, section, name, {}); });
-                if (inferredIface) policyState[ifaceKeyName].value = inferredIface;
-              }
-            }
-            // Per user report about missing VIP support: picking a
-            // Destination object that resolves to a VIP (or vipgrp) with
-            // a SPECIFIC extintf also live-previews that value into
-            // SRCINTF — not dstintf, since it's the VIP's OWN device's
-            // source-facing interface constraint, confirmed authoritative
-            // by Fortinet's own documentation (see core.js's
-            // vipExtIntfConstraintForRef). This preview mirrors what
-            // generatePolicyCli's real per-target resolution will do (see
-            // core.js's resolveIntf, which checks this VIP constraint
-            // FIRST, ahead of normal srcaddr-based inference) — same
-            // "only touch a field the user hasn't manually set
-            // themselves" gate as every other auto-fill in this file.
-            if (comboField2 === 'dst' && !policyState.srcintf.userTouched) {
-              var vipDevEntry = DEVICES.filter(function (d) { return d.label === pickedEntry.device; })[0];
-              if (vipDevEntry) {
-                var allDevicesByLabelPreview = {};
-                DEVICES.forEach(function (d) { allDevicesByLabelPreview[d.label] = d.parsed; });
-                var vipRef = { mode: 'existing', section: pickedEntry.section, name: pickedEntry.name,
-                  sourceDevice: pickedEntry.device, sourceVdom: pickedEntry.vdom };
-                var vipConstraintPreview = Core.vipExtIntfConstraintForRef(vipRef, allDevicesByLabelPreview);
-                if (vipConstraintPreview) {
-                  policyState.srcintf.auto = true;
-                  policyState.srcintf.value = vipConstraintPreview;
-                }
-              }
-            }
+            // NOTE: this branch only ever handles service/schedule/nat
+            // picks (kindIface and src/dst are both caught above it) —
+            // none of those have an associated Srcintf/Dstintf field
+            // (ifaceFieldNameFor only maps 'src'/'dst'), so no interface
+            // auto-fill judgment belongs here. That judgment (including
+            // the VIP-extintf-constrains-Srcintf check) now lives in ONE
+            // place, maybeAutoFillIntfFromField, called via
+            // syncFieldPickEffects from every src/dst pick-resolving
+            // path (the branch above, plus the toggle/select-all/paste
+            // handlers) — see its own big comment for the real
+            // generation-time bug that consolidation fixed.
             renderPolicyBuilder();
           }
         }
@@ -5840,5 +6100,3 @@
 </script>
 </body>
 </html>
-
-
