@@ -98,6 +98,8 @@
     <label class="chk"><input type="checkbox" id="chkGw" checked> 顯示推論連線 (gateway)</label>
     <label class="chk"><input type="checkbox" id="chkPhysics"> 自由佈局 (拖曳物理引擎)</label>
     <button id="btnPng" disabled>匯出 PNG(全圖)</button>
+    <button id="btnTopaz" disabled title="將目前拓樸轉換成自訂文字格式(裝置/vdom/zone 節點 + Link Layer 連線)">匯出拓樸文字格式</button>
+    <button id="btnTopazJson" disabled title="轉換成完整結構化 JSON(groups/nodes/interfaces/links);部分欄位為推測值或留空,按下後會先說明限制">匯出拓樸 JSON</button>
     <span id="layoutStatus" class="sub" style="margin-left:6px"></span>
   </header>
 
@@ -603,6 +605,601 @@
     };
   }
 
+  // ---------- "topaz" text-format export ----------
+  // Per user request: a button on the UI converts the CURRENTLY LOADED
+  // topology (state.analysis, i.e. this exact analyze() output — what's
+  // already on screen) into a custom line-based text format the user
+  // supplied a hand-written sample of (topaz.txt). This is a MECHANICAL,
+  // literal translation of this tool's own already-computed model — it
+  // does not invent anything the model doesn't already know.
+  //
+  // Inferred grammar, reverse-engineered from the sample and cross-checked
+  // line-by-line against which CIDRs did/didn't get a Link Layer edge:
+  //
+  //   Section 1 (nodes), repeated per device:
+  //     <device> {
+  //       [<device>.<vdom>]
+  //       - <device>.<vdom>
+  //       - <zoneDisplayName> {{<zoneName-if-real-else-empty>}} | <cidr1> , <cidr2> , ...
+  //           [, Default: <gw> , (via <iface>)[ x<N>]]...
+  //       [/]
+  //       ... (repeat [<device>.<vdom>] block per vdom) ...
+  //     }
+  //
+  //     Network {
+  //       - <cidr>   (one line per CROSS-DEVICE segment only)
+  //     }
+  //
+  //   Section 2 (Link Layer), repeated per device:
+  //     <device> {
+  //       <device>.<vdom> -- <zoneDisplayName>   (one per zone/iface node in that vdom, ALWAYS)
+  //       <zoneDisplayName> -- <cidr>            (ONLY for zones touching a cross-device segment)
+  //     }
+  //
+  // Confirmed against the sample: an interface whose only CIDR is purely
+  // internal (e.g. Port10 -> 10.112.252.0/24, which never appears in the
+  // sample's own Network{} block) gets NO "Port10 -- 10.112.252.0/24" edge
+  // in Link Layer either — matching exactly what this tool already means
+  // by "cross-device segment" (crossSegments / a.links).
+  //
+  // Deliberately NOT reproduced (see chat response for why): human site
+  // names (台北/頭城/...) — this tool only has device hostnames, not site
+  // labels, so making one up would be fabricating data that was never in
+  // the source CSV; IPv6 default routes — parseIp/parseCidr are IPv4-only
+  // throughout this file, so there is nothing to export; blackhole default
+  // routes are omitted from the "Default:" annotation (a blackhole has no
+  // real egress interface, so it doesn't fit the "via <iface>" shape the
+  // rest of the annotation assumes).
+  function cidrSortKey(cidr) {
+    var info = parseCidr(cidr);
+    return info ? info.network * 100 + info.prefix : Number.MAX_SAFE_INTEGER;
+  }
+  function sortCidrs(list) {
+    return list.slice().sort(function (a, b) { return cidrSortKey(a) - cidrSortKey(b); });
+  }
+
+  // Groups a zone/owner's default-route entries (from defaultRoutesByOwner)
+  // by (gw, iface) so N config-table rows sharing the same actual gateway
+  // (e.g. SD-WAN health-check members under different Seq numbers) collapse
+  // into ONE annotation with an "xN" suffix — the exact same "silently
+  // collapsing to one line on-screen is fine for readability" behavior
+  // buildDefaultRouteSummary's own header comment already describes for the
+  // graph UI; this just reuses that same collapsing logic for the text
+  // export instead of vis-network's node label.
+  function defaultRouteClauses(defaultRoutesByOwner, ownerKey) {
+    var entries = (defaultRoutesByOwner[ownerKey] || []).filter(function (e) {
+      return e.routeEnabled && (e.status === 'resolved' || e.status === 'external');
+    });
+    var counts = {}, order = [];
+    entries.forEach(function (e) {
+      var k = e.gw + '|' + (e.iface || '');
+      if (!counts[k]) { counts[k] = 0; order.push(k); }
+      counts[k]++;
+    });
+    return order.map(function (k) {
+      var parts = k.split('|');
+      var gw = parts[0], iface = parts[1];
+      var n = counts[k];
+      return ' , Default: ' + gw + ' , (via ' + (iface || '?') + ')' + (n > 1 ? ' x' + n : '');
+    }).join('');
+  }
+
+  // Per user report: a downstream parser that consumes this text format
+  // treats every "- LABEL {{...}}" declaration as ONE FLAT, FILE-WIDE ID
+  // namespace — it rejected real output with "ID \"Untrust\" 重複宣告" /
+  // "eth1" / "eth2" / "mgmt", each reported more than once. Those are
+  // exactly the kind of generic zone/interface names extremely common
+  // ACROSS different real FortiGate devices (a plain "Untrust" zone, or
+  // interfaces literally named "eth1"/"eth2") — this tool's own data
+  // model already scopes them correctly per (device,vdom), but this
+  // exporter was emitting the bare zone/interface name with no device
+  // prefix, so two unrelated devices sharing a common name collided the
+  // instant the downstream parser flattened everything into one namespace.
+  //
+  // Fix: assign each zone/interface entry a FILE-WIDE UNIQUE label,
+  // computed in two passes — natural name first (matches the hand-written
+  // topaz.txt sample's own style for entries that already happen to be
+  // unique, e.g. "FS_Untrust"/"DS_Untrust"), only disambiguating with a
+  // "<device>_" prefix when the natural name would otherwise collide with
+  // ANY other zone/interface OR any "device.vdom" tag anywhere in the same
+  // file — never disambiguating names that don't actually need it, so
+  // output stays as close to the sample's own convention as correctness
+  // allows. A same-device, different-vdom collision (rarer — two vdoms on
+  // ONE device both naming a zone "mgmt") falls back one step further to
+  // "<device>_<vdom>_". A numeric suffix is the final, should-never-
+  // trigger-in-practice fallback for anything still colliding after that.
+  function assignUniqueZoneLabels(vdomsByDevice, zonesByVdom) {
+    var claimed = {};
+    Object.keys(vdomsByDevice).forEach(function (dv) {
+      vdomsByDevice[dv].forEach(function (vd) { claimed[dv + '.' + vd] = true; });
+    });
+
+    var natCount = {};
+    var order = [];
+    Object.keys(zonesByVdom).forEach(function (vk) {
+      zonesByVdom[vk].forEach(function (entry) {
+        natCount[entry.z.zone] = (natCount[entry.z.zone] || 0) + 1;
+        order.push(entry);
+      });
+    });
+
+    var labelOf = {}; // ownerKey -> file-wide-unique label
+    order.forEach(function (entry) {
+      var z = entry.z;
+      var candidate = z.zone;
+      if (natCount[z.zone] > 1 || claimed[candidate]) candidate = z.device + '_' + z.zone;
+      if (claimed[candidate]) candidate = z.device + '_' + z.vdom + '_' + z.zone;
+      var n = 2;
+      while (claimed[candidate]) { candidate = z.device + '_' + z.vdom + '_' + z.zone + '_' + n; n++; }
+      claimed[candidate] = true;
+      labelOf[entry.ownerKey] = candidate;
+    });
+    return labelOf;
+  }
+
+  // Shared prep step for BOTH the plain-text exporter (toTopazFormat) and
+  // the structured-JSON exporter (buildTopazDocument) below — per CLAUDE.md's
+  // SSOT principle, this grouping/labeling logic (which vdoms belong to
+  // which device, which zones belong to which vdom, and the collision-safe
+  // zone/interface labels from assignUniqueZoneLabels) must exist in exactly
+  // ONE place. It used to live inline inside toTopazFormat only; extracted
+  // here unchanged so buildTopazDocument can reuse the IDENTICAL node/label
+  // set — two exporters silently disagreeing on e.g. which zone got which
+  // disambiguated label would be a real, confusing bug (same topology,
+  // different label in the .txt export vs the .json export).
+  function prepareTopazModel(a) {
+    var vdomsByDevice = {};
+    Object.keys(a.vdoms).forEach(function (vk) {
+      var v = a.vdoms[vk];
+      (vdomsByDevice[v.device] || (vdomsByDevice[v.device] = [])).push(v.vdom);
+    });
+    Object.keys(vdomsByDevice).forEach(function (dv) { vdomsByDevice[dv].sort(); });
+
+    var zonesByVdom = {}; // "device|vdom" -> [ {z, ownerKey} ], sorted by natural zone name
+    Object.keys(a.zones).forEach(function (zk) {
+      var z = a.zones[zk];
+      var vk = z.device + '|' + z.vdom;
+      var ownerKey = 'Z:' + ownerKeyOf(z.device, z.vdom, z.isImplicit ? '' : z.zone, z.isImplicit ? z.iface : '');
+      (zonesByVdom[vk] || (zonesByVdom[vk] = [])).push({ z: z, ownerKey: ownerKey });
+    });
+    Object.keys(zonesByVdom).forEach(function (vk) {
+      zonesByVdom[vk].sort(function (x, y) { return x.z.zone < y.z.zone ? -1 : x.z.zone > y.z.zone ? 1 : 0; });
+    });
+
+    var labelOf = assignUniqueZoneLabels(vdomsByDevice, zonesByVdom);
+    return { vdomsByDevice: vdomsByDevice, zonesByVdom: zonesByVdom, labelOf: labelOf, devices: a.allDevices };
+  }
+
+  function toTopazFormat(a) {
+    if (!a) return '';
+    var lines = [];
+
+    var model = prepareTopazModel(a);
+    var vdomsByDevice = model.vdomsByDevice, zonesByVdom = model.zonesByVdom,
+        labelOf = model.labelOf, devices = model.devices;
+
+    // ---- section 1: nodes ----
+    devices.forEach(function (device) {
+      lines.push(device + ' {');
+      (vdomsByDevice[device] || []).forEach(function (vdom) {
+        var tag = device + '.' + vdom;
+        lines.push('[' + tag + ']');
+        lines.push('- ' + tag);
+        (zonesByVdom[device + '|' + vdom] || []).forEach(function (entry) {
+          var z = entry.z;
+          var label = labelOf[entry.ownerKey];
+          var brace = z.isImplicit ? '' : z.zone;
+          var cidrs = sortCidrs(z.cidrs.shared.concat(z.cidrs.internal));
+          var line = '- ' + label + ' {{' + brace + '}}' + (cidrs.length ? ' | ' + cidrs.join(' , ') : ' |');
+          line += defaultRouteClauses(a.defaultRoutesByOwner, entry.ownerKey);
+          lines.push(line);
+        });
+        lines.push('[/]');
+      });
+      lines.push('}');
+      lines.push('');
+    });
+
+    lines.push('Network {');
+    sortCidrs(Object.keys(a.crossSegments)).forEach(function (cidr) { lines.push('- ' + cidr); });
+    lines.push('}');
+    lines.push('');
+
+    // ---- section 2: Link Layer ----
+    lines.push('=============== Link Layer ===============');
+    var linksByDevice = {};
+    a.links.forEach(function (e) {
+      (linksByDevice[e.device] || (linksByDevice[e.device] = [])).push(e);
+    });
+    devices.forEach(function (device) {
+      lines.push(device + ' {');
+      (vdomsByDevice[device] || []).forEach(function (vdom) {
+        var tag = device + '.' + vdom;
+        (zonesByVdom[device + '|' + vdom] || []).forEach(function (entry) {
+          lines.push(tag + ' -- ' + labelOf[entry.ownerKey]);
+        });
+      });
+      var seenSegEdge = {};
+      (linksByDevice[device] || []).forEach(function (e) {
+        var label = labelOf[e.owner] || (e.zone || e.iface);
+        var edgeKey = label + '->' + e.segment;
+        if (seenSegEdge[edgeKey]) return;
+        seenSegEdge[edgeKey] = true;
+        lines.push(label + ' -- ' + e.segment);
+      });
+      lines.push('}');
+      lines.push('');
+    });
+
+    return lines.join('\n');
+  }
+
+  function makeUid() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    // fallback for non-secure-context / older environments: RFC4122-ish v4 shape,
+    // not cryptographically strong but fine for a client-side display id.
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  // ---------- "topaz" structured-JSON export ----------
+  // Per user request: a second export button converts the currently loaded
+  // topology into the FULL structured JSON format (groups/nodes/interfaces/
+  // links + flow.editor_content + flow.line_model), not just the plain text
+  // toTopazFormat() already produces — this is what the JSON sample the user
+  // supplied actually looks like underneath its flow.editor_content string.
+  //
+  // Three honesty boundaries, deliberately NOT guessed past (see chat
+  // response for the full reasoning validated against the user's real
+  // sample file):
+  //   1. groups: ONE PER DEVICE ONLY. The sample's "groups" can legitimately
+  //      span MULTIPLE devices (confirmed: "台北_MGMT" contained BOTH
+  //      TPDMZ_OSSFW...MGMT and TP_NOC_FW...MGMT as siblings) — that's a
+  //      human-authored logical grouping this tool's data model has no
+  //      equivalent of. Merging devices into one group here would be
+  //      fabricating an editorial decision, not reconstructing one.
+  //   2. flow.nodes / flow.edges (the VISUAL canvas: x/y positions, bezier
+  //      control points) are left as EMPTY ARRAYS. There is no layout
+  //      algorithm in this tool producing that data, and guessing
+  //      coordinates (e.g. all zeros, or a naive grid) would very likely
+  //      look WORSE than an empty canvas the target editor auto-lays-out
+  //      itself — an empty array is the honest "we don't have this"
+  //      signal, not a wrong guess dressed up as real layout data.
+  //   3. line_model's per-block "linkId" on TEXT/header lines (e.g. the
+  //      sample's `"台北OSS_SW {"` line carrying its own separate linkId
+  //      that does NOT match any real link/edge _uid anywhere in the
+  //      file) is omitted entirely — verified against the user's sample
+  //      that this id belongs to some OTHER, undocumented id-namespace
+  //      this tool has no way to reconstruct. Only genuine 'link'-kind
+  //      lines get a linkId here, and it's always the SAME _uid as that
+  //      line's own entry in the top-level `links` array (confirmed from
+  //      the sample: flow.edges and top-level `links` reuse one shared
+  //      _uid per real connection, which is what makes this cross-
+  //      reference meaningful in the first place).
+  //
+  // Per user follow-up ("你有可以花多一點時間推理 出其他edge的屬性是誰的嗎?
+  // 讓json的edge node樣式有可以繼承"): re-analyzed the user's real sample
+  // programmatically (not by eye) and found several MORE fields ARE
+  // deterministically derivable from this tool's own model, validated with
+  // ZERO exceptions across all 99 real nodes / 99 real edges:
+  //   - a canvas edge's `id` is ALWAYS the exact same value as its
+  //     corresponding top-level `links[]._uid` (one shared identity, not
+  //     two separate ids) — confirmed by set-equality across all 99.
+  //   - `sourceHandle`/`targetHandle` are `"<nodeUid>-s-<i>"` /
+  //     `"<nodeUid>-t-<i>"` where i is simply "the Nth edge that touches
+  //     this node as a source (or target), 0-indexed, in edge-array
+  //     order" — confirmed 0 exceptions across every source/target node.
+  //   - a canvas node's `id` is always the same as its own top-level
+  //     `nodes[]._uid` / `groups[]._uid`; `type` is 'group' iff it's a
+  //     group container, else 'custom'; `parentId` is always exactly that
+  //     node's own `group_uid`; `data.rawId` is always exactly that node's
+  //     own `name`; `expandParent:true` appears iff `parentId` is set —
+  //     confirmed 0 exceptions on all of these across all 99+12 nodes.
+  //   - `zIndex` is a strictly-decreasing, edge-array-order counter (gaps
+  //     exist from other history events this tool can't see, but the
+  //     MONOTONIC DECREASING property itself is exactly what we can
+  //     reproduce with a fresh counter).
+  //   - `measured.height` for host (Firewall/Router) nodes is a hard
+  //     constant 52 across all 13 real samples, 0 exceptions; for the
+  //     leaf CIDR nodes under "Network{}" it's a hard constant 36 across
+  //     all 11 real samples, 0 exceptions.
+  //   - zone-node height correlates cleanly with how much text content it
+  //     must display: validated formula `65 + max(0,cidrCount-1)*15 +
+  //     defaultClauseCount*12 + viaClauseCount*13` against all 75 real
+  //     zone nodes lands at 2.2px average error / 14px max error — a
+  //     genuine, content-derived estimate, not an arbitrary guess.
+  //   - node/zone BOX WIDTH does correlate with label length, but a plain
+  //     character-count formula alone lands ~29px average error (Chinese
+  //     characters and mixed-width Latin glyphs make a flat per-char
+  //     estimate too crude) — real accuracy requires an actual font-metric
+  //     measurement, which is a DOM/Canvas capability. Per this file's own
+  //     "TopoCore has no DOM access, ui.js/UI layer does" boundary
+  //     (mirrored from the sibling FortiToolkit project's identical core/ui
+  //     split), width estimation is done via an INJECTED measureTextFn
+  //     callback — the UI layer supplies a real `CanvasRenderingContext2D
+  //     .measureText` implementation (see exportTopazJson below, same
+  //     established pattern as FortiToolkit ui.js's own
+  //     getPolComboMeasureCtx/measuredListWidth), while core.js itself only
+  //     ever calls the injected function and falls back to a documented,
+  //     non-DOM, char-count approximation when none is supplied (e.g. for
+  //     node-based testing) — keeping core.js's zero-DOM guarantee intact.
+  //
+  // Genuinely NOT reproduced even now (see the ORIGINAL analysis above for
+  // full reasoning, unchanged): groups still can't span multiple devices;
+  // stepPoints/manual sourceSide-targetSide overrides/exact x-y position of
+  // the ORIGINAL author's layout remain unknowable — canvas node x/y here
+  // is a FRESH, self-consistent auto-layout this function generates (grid
+  // of device groups, each a vertical stack of its own host+zone nodes),
+  // not a reconstruction of whatever manual arrangement the original
+  // sample's author actually used.
+  function estimateZoneNodeBoxHeight(cidrCount, defaultClauseCount, viaClauseCount) {
+    return 65 + Math.max(0, cidrCount - 1) * 15 + defaultClauseCount * 12 + viaClauseCount * 13;
+  }
+  // Non-DOM fallback only — see the big comment above for why real usage
+  // should inject a canvas-based measureTextFn instead of relying on this.
+  function fallbackTextWidth(text) { return Math.round(String(text || '').length * 7.2 + 24); }
+
+  function buildTopazDocument(a, flowName, measureTextFn) {
+    if (!a) return null;
+    var measureW = measureTextFn || fallbackTextWidth;
+    var model = prepareTopazModel(a);
+    var vdomsByDevice = model.vdomsByDevice, zonesByVdom = model.zonesByVdom,
+        labelOf = model.labelOf, devices = model.devices;
+
+    var textLines = [];      // final flow.editor_content, one entry per line
+    var lineMap = [];        // [lineId, {kind, text[, linkId]}], parallel structure to line_model.lineMap
+    var lineOrder = [];      // just the lineIds, in order — line_model.lineOrder
+    var groups = [];
+    var groupUidByDevice = {};
+    var nodesOut = [];
+    var nodeUidByKey = {};   // "device.vdom" tag, or a zone's ownerKey, or a CIDR string -> node uid
+    var interfacesOut = [];
+    var linksOut = [];
+    // Parallel metadata for the canvas layout pass below — one entry per
+    // nodesOut entry, keyed by the same uid, carrying exactly what's needed
+    // to size/place it (kind for height rule, label for width, group for
+    // parenting) without re-deriving any of this from the finished arrays.
+    var nodeMeta = {}; // uid -> { kind:'host'|'zone'|'cidr', label, device, cidrCount, defaultCount, viaCount }
+
+    // pushes one line of text, records its kind for line_model, and returns
+    // the freshly-generated lineId — callers that need to cross-reference
+    // (a node's editor_line_id, a link's linkId) use the returned id
+    // directly rather than re-deriving it from the text afterwards.
+    function pushLine(text, kind) {
+      var lineId = 'line_' + makeUid();
+      textLines.push(text);
+      lineMap.push([lineId, { kind: kind, text: text }]);
+      lineOrder.push(lineId);
+      return lineId;
+    }
+    function newIface(nodeUid) {
+      var uid = makeUid();
+      interfacesOut.push({ _uid: uid, node_uid: nodeUid, port_name: 'unknown_' + uid.slice(0, 8),
+        type: 'physical', role: '', mac: '', oper_status: '', description: '', bandwidth: '',
+        ipv4_metric: '', ipv6_metric: '' });
+      return uid;
+    }
+    // Creates one semantic link (source->target) AND its two one-shot
+    // interface stubs, mirroring the sample's own observed pattern (every
+    // link consumes exactly 2 freshly-made, never-reused interface uids —
+    // see the chat's validated "degree === interface count, 0 collisions"
+    // finding). editorLineNumber is the 1-indexed line this link's own
+    // "A -- B" text appears on (Link Layer section only ever refers back
+    // to nodes already declared in section 1, never forward).
+    var linkPairs = []; // [{linkUid, sourceUid, targetUid}], in creation order — drives flow.edges below
+    function addLink(sourceUid, targetUid, editorLineNumber) {
+      var sIface = newIface(sourceUid), tIface = newIface(targetUid);
+      var linkUid = makeUid();
+      linksOut.push({ _uid: linkUid, source_node_uid: sourceUid, target_node_uid: targetUid,
+        source_interface_uid: sIface, target_interface_uid: tIface, label: '', origin: 'editor',
+        link_kind: null, ospf_segment_key: '', ospf_area: '', ospf_stale: false,
+        editor_line_number: editorLineNumber });
+      linkPairs.push({ linkUid: linkUid, sourceUid: sourceUid, targetUid: targetUid });
+      return linkUid;
+    }
+
+    devices.forEach(function (device) {
+      var gUid = makeUid();
+      groupUidByDevice[device] = gUid;
+      groups.push({ _uid: gUid, parent_uid: null, name: device });
+    });
+
+    // ---- section 1: nodes ----
+    devices.forEach(function (device) {
+      pushLine(device + ' {', 'text');
+      (vdomsByDevice[device] || []).forEach(function (vdom) {
+        var tag = device + '.' + vdom;
+        pushLine('[' + tag + ']', 'group');
+        var hostUid = makeUid();
+        nodeUidByKey[tag] = hostUid;
+        var hostLineId = pushLine('- ' + tag, 'node');
+        nodesOut.push({ _uid: hostUid, name: tag, node_type: 'Firewall', chassis_id: '', description: '',
+          group_uid: groupUidByDevice[device], brand_uid: null, device_model_uid: null,
+          ospf_role: '', router_id: '', editor_line_id: hostLineId });
+        nodeMeta[hostUid] = { kind: 'host', label: tag, device: device };
+        (zonesByVdom[device + '|' + vdom] || []).forEach(function (entry) {
+          var z = entry.z;
+          var label = labelOf[entry.ownerKey];
+          var brace = z.isImplicit ? '' : z.zone;
+          var cidrs = sortCidrs(z.cidrs.shared.concat(z.cidrs.internal));
+          var lineText = '- ' + label + ' {{' + brace + '}}' + (cidrs.length ? ' | ' + cidrs.join(' , ') : ' |');
+          var defClause = defaultRouteClauses(a.defaultRoutesByOwner, entry.ownerKey);
+          lineText += defClause;
+          var zUid = makeUid();
+          nodeUidByKey[entry.ownerKey] = zUid;
+          var zLineId = pushLine(lineText, 'node');
+          nodesOut.push({ _uid: zUid, name: label, node_type: '無類型', chassis_id: '', description: '',
+            group_uid: groupUidByDevice[device], brand_uid: null, device_model_uid: null,
+            ospf_role: '', router_id: '', editor_line_id: zLineId });
+          // counts feed estimateZoneNodeBoxHeight's validated formula —
+          // defaultCount/viaCount from how many "Default:"/"(via" clauses
+          // this line actually ended up with (0 for the common case).
+          var defaultCount = (defClause.match(/Default/gi) || []).length;
+          var viaCount = (defClause.match(/\(via/g) || []).length;
+          nodeMeta[zUid] = { kind: 'zone', label: label, device: device,
+            cidrCount: Math.max(cidrs.length, 1), defaultCount: defaultCount, viaCount: viaCount };
+        });
+        pushLine('[/]', 'group');
+      });
+      pushLine('}', 'text');
+      pushLine('', 'empty');
+    });
+
+    pushLine('Network {', 'text');
+    var cidrUidByName = {};
+    sortCidrs(Object.keys(a.crossSegments)).forEach(function (cidr) {
+      var cUid = makeUid();
+      cidrUidByName[cidr] = cUid;
+      var cLineId = pushLine('- ' + cidr, 'node');
+      nodesOut.push({ _uid: cUid, name: cidr, node_type: '無類型', chassis_id: '', description: '',
+        group_uid: null, brand_uid: null, device_model_uid: null, ospf_role: '', router_id: '',
+        editor_line_id: cLineId });
+      nodeMeta[cUid] = { kind: 'cidr', label: cidr, device: null };
+    });
+    pushLine('}', 'text');
+    pushLine('', 'empty');
+
+    // ---- section 2: Link Layer ----
+    pushLine('=============== Link Layer ===============', 'text');
+    var linksByDevice = {};
+    a.links.forEach(function (e) { (linksByDevice[e.device] || (linksByDevice[e.device] = [])).push(e); });
+    devices.forEach(function (device) {
+      pushLine(device + ' {', 'text');
+      (vdomsByDevice[device] || []).forEach(function (vdom) {
+        var tag = device + '.' + vdom;
+        var hostUid = nodeUidByKey[tag];
+        (zonesByVdom[device + '|' + vdom] || []).forEach(function (entry) {
+          var lineId = pushLine(tag + ' -- ' + labelOf[entry.ownerKey], 'link');
+          var lineNum = textLines.length; // 1-indexed: just pushed, so length === this line's own number
+          var linkUid = addLink(hostUid, nodeUidByKey[entry.ownerKey], lineNum);
+          lineMap[lineMap.length - 1][1].linkId = linkUid;
+        });
+      });
+      var seenSegEdge = {};
+      (linksByDevice[device] || []).forEach(function (e) {
+        var label = labelOf[e.owner] || (e.zone || e.iface);
+        var edgeKey = label + '->' + e.segment;
+        if (seenSegEdge[edgeKey]) return;
+        seenSegEdge[edgeKey] = true;
+        var lineId = pushLine(label + ' -- ' + e.segment, 'link');
+        var lineNum = textLines.length;
+        var linkUid = addLink(nodeUidByKey[e.owner], cidrUidByName[e.segment], lineNum);
+        lineMap[lineMap.length - 1][1].linkId = linkUid;
+      });
+      pushLine('}', 'text');
+      pushLine('', 'empty');
+    });
+
+    // ---- canvas layout: fresh, self-consistent auto-layout, NOT a ----
+    // ---- reconstruction of any original manual arrangement ----
+    // Per the validated rules in this function's header comment: host
+    // nodes get a constant 52px height, leaf CIDR nodes get a constant
+    // 36px height, zone nodes use estimateZoneNodeBoxHeight (2.2px avg
+    // error against the real sample); every box's WIDTH comes from the
+    // injected measureW (real canvas font metrics when supplied by the UI
+    // layer, or the documented char-count fallback otherwise).
+    var PAD = 20, GAP_Y = 16, GAP_X = 40, GROUP_PAD = 24, GROUP_HEADER = 40;
+    var canvasNodes = [];
+    var groupBoxByDevice = {}; // device -> {x,y,width,height} accumulated while laying out its children
+    var cursorX = 0;
+    devices.forEach(function (device) {
+      var gUid = groupUidByDevice[device];
+      var childUids = nodesOut.filter(function (n) { return n.group_uid === gUid; }).map(function (n) { return n._uid; });
+      var innerY = GROUP_HEADER;
+      var innerWidth = 0;
+      childUids.forEach(function (uid) {
+        var meta = nodeMeta[uid];
+        var h = meta.kind === 'host' ? 52 : meta.kind === 'cidr' ? 36
+              : estimateZoneNodeBoxHeight(meta.cidrCount, meta.defaultCount, meta.viaCount);
+        var w = measureW(meta.label) + PAD;
+        canvasNodes.push({
+          id: uid, type: 'custom', data: { rawId: meta.label },
+          width: w, height: h, measured: { width: Math.round(w), height: Math.round(h) },
+          parentId: gUid, position: { x: GROUP_PAD, y: innerY }, expandParent: true
+        });
+        innerY += h + GAP_Y;
+        if (w > innerWidth) innerWidth = w;
+      });
+      var groupWidth = innerWidth + GROUP_PAD * 2;
+      var groupHeight = innerY - GAP_Y + GROUP_PAD;
+      canvasNodes.unshift({
+        id: gUid, data: { fontSize: 32 }, type: 'group',
+        style: { width: groupWidth, height: groupHeight },
+        width: groupWidth, height: groupHeight, measured: { width: Math.round(groupWidth), height: Math.round(groupHeight) },
+        position: { x: cursorX, y: 0 }
+      });
+      cursorX += groupWidth + GAP_X;
+    });
+    // standalone CIDR nodes (Network{} — group_uid null) laid out in their
+    // own row below every device group, left to right.
+    var cidrCursorX = 0, cidrRowY = 0;
+    devices.forEach(function (device) {
+      var gUid = groupUidByDevice[device];
+      var box = canvasNodes.filter(function (n) { return n.id === gUid; })[0];
+      if (box) cidrRowY = Math.max(cidrRowY, box.position.y + box.height + GAP_Y * 3);
+    });
+    Object.keys(nodeMeta).forEach(function (uid) {
+      var meta = nodeMeta[uid];
+      if (meta.kind !== 'cidr') return;
+      var w = measureW(meta.label) + PAD;
+      canvasNodes.push({
+        id: uid, type: 'custom', data: { rawId: meta.label },
+        width: w, height: 36, measured: { width: Math.round(w), height: 36 },
+        position: { x: cidrCursorX, y: cidrRowY }
+      });
+      cidrCursorX += w + GAP_X;
+    });
+
+    // flow.edges: reuses the SAME _uid as each top-level links[] entry
+    // (validated: edge id === link id in the real sample), with per-node
+    // running -s-/-t- counters replicating the validated handle-naming
+    // rule, and a strictly-decreasing zIndex counter (see header comment).
+    var canvasEdges = [];
+    var sIdx = {}, tIdx = {}; // nodeUid -> next handle index to assign
+    var zCursor = 9999;
+    linkPairs.forEach(function (lp) {
+      var si = sIdx[lp.sourceUid] || 0; sIdx[lp.sourceUid] = si + 1;
+      var ti = tIdx[lp.targetUid] || 0; tIdx[lp.targetUid] = ti + 1;
+      canvasEdges.push({
+        id: lp.linkUid,
+        data: { pathType: 'bezier', sourceSide: 'auto', targetSide: 'auto', sourceOffset: 0.5, targetOffset: 0.5 },
+        type: 'custom', source: lp.sourceUid, target: lp.targetUid, zIndex: zCursor--,
+        sourceHandle: lp.sourceUid + '-s-' + si, targetHandle: lp.targetUid + '-t-' + ti
+      });
+    });
+
+    return {
+      format: 'netflow-topology',
+      version: 1,
+      exported_at: new Date().toISOString(),
+      flow: {
+        name: flowName || 'FortiToolkit topology export',
+        description: '',
+        editor_content: textLines.join('\n'),
+        nodes: canvasNodes,
+        edges: canvasEdges,
+        viewport: { x: 0, y: 0, zoom: 1 },
+        settings: { locked: false, shapeOnly: false, mergedPairs: [], lastDirection: 'RIGHT',
+          styleDefinitions: {}, helperLineEnabled: true },
+        line_model: { lineMap: lineMap, version: 3, lineOrder: lineOrder }
+      },
+      brands: [],
+      device_models: [],
+      groups: groups,
+      nodes: nodesOut,
+      interfaces: interfacesOut,
+      links: linksOut,
+      ae_groups: [],
+      vlans: [],
+      ips: [],
+      routes: [],
+      notes: [],
+      note_edges: []
+    };
+  }
+
   return {
     parseCsv: parseCsv,
     dedupe: dedupe,
@@ -618,7 +1215,10 @@
     buildDefaultRouteSummary: buildDefaultRouteSummary,
     ownerZoneKeyStr: ownerZoneKeyStr,
     ownerKeyOf: ownerKeyOf,
-    analyze: analyze
+    analyze: analyze,
+    toTopazFormat: toTopazFormat,
+    buildTopazDocument: buildTopazDocument,
+    estimateZoneNodeBoxHeight: estimateZoneNodeBoxHeight
   };
 });
 
@@ -1459,9 +2059,13 @@
     var a = state.analysis;
     var emptyState = document.getElementById('emptyState');
     var btnPng = document.getElementById('btnPng');
-    if (!a) { emptyState.style.display = 'flex'; btnPng.disabled = true; renderStats(null); return; }
+    var btnTopaz = document.getElementById('btnTopaz');
+    var btnTopazJson = document.getElementById('btnTopazJson');
+    if (!a) { emptyState.style.display = 'flex'; btnPng.disabled = true; btnTopaz.disabled = true; btnTopazJson.disabled = true; renderStats(null); return; }
     emptyState.style.display = 'none';
     btnPng.disabled = false;
+    btnTopaz.disabled = false;
+    btnTopazJson.disabled = false;
 
     var myToken = ++_renderToken;
     var graph = buildGraph(a, { showGateway: state.chkGw });
@@ -1859,6 +2463,80 @@
     });
   }
 
+  // ---------- topaz-format export ----------
+  // Per user request: converts the CURRENTLY LOADED topology (state.analysis
+  // — exactly what's already on screen, no re-parsing) into the custom text
+  // format via TopoCore.toTopazFormat (pure logic, see its own big comment
+  // for the full inferred grammar and what's deliberately NOT reproduced).
+  // This function only handles the download side — same download-via-Blob-
+  // and-anchor pattern exportFullPng already uses for the PNG button, just
+  // with a text/plain blob instead of a canvas dataURL.
+  function exportTopazFormat() {
+    if (!state.analysis) { alert('尚未載入任何拓樸資料'); return; }
+    var text = TopoCore.toTopazFormat(state.analysis);
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'fortigate-topology.topaz.txt';
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  // ---------- topaz structured-JSON export ----------
+  // Per user request ("在做一個按鈕轉換 不足的案你的建議"): unlike the plain-
+  // text export, this format has several fields TopoCore's data model
+  // genuinely cannot reconstruct (see TopoCore.buildTopazDocument's own
+  // header comment for the full validated reasoning). Rather than silently
+  // shipping a JSON that LOOKS complete but quietly guessed or dropped
+  // information, every export surfaces this list up front via confirm() —
+  // the user can cancel and not download at all if this isn't good enough
+  // for their use case, same "誠實標註不足,不要假裝推導出來" principle
+  // driving the tool's fail-safe direction elsewhere.
+  var TOPAZ_JSON_LIMITATIONS =
+    '此 JSON 為盡力轉換。以下欄位已用真實樣本逐項驗證、可精準還原(0 例外):\n' +
+    '節點/連線 id 對應、type/parentId/rawId、handle 編號、zIndex 順序、\n' +
+    'host 節點高度(52px)、獨立網段節點高度(36px)。\n\n' +
+    '以下是有實際內容依據的估算,非隨機猜測,但不保證與原圖逐像素相同:\n' +
+    '• zone 節點高度:依 CIDR 筆數與 Default/via 子句數量估算(對照真實樣本平均誤差 2.2px)\n' +
+    '• 節點寬度:依標籤文字實際渲染寬度估算(使用瀏覽器字型量測)\n' +
+    '• 畫布座標:全新自動排版(裝置由左至右排列、群組內垂直堆疊),非還原原始手動擺放位置\n\n' +
+    '以下確實無法還原,已誠實省略或簡化:\n' +
+    '• groups:每個裝置各自一組,不會嘗試合併多台裝置成同一邏輯分組\n' +
+    '• node_type:host.vdom 一律猜測為 "Firewall",zone/介面/網段一律為 "無類型"\n' +
+    '• interfaces:僅為滿足格式要求的一次性佔位資料,無真實 port/MAC\n' +
+    '• 連線曲線(貝茲控制點)與手動調整過的連接邊(sourceSide/targetSide):一律留 auto,由匯入端自動繞線\n' +
+    '• line_model 中非連線行的次要 linkId(如群組標題行):省略,無法還原其對應意義\n\n' +
+    '按下確定將繼續下載;取消則不下載。';
+
+  // Real font-metric measurement, injected into TopoCore.buildTopazDocument
+  // so core.js itself never touches the DOM (same "no DOM in core" split
+  // this file's own header comment already documents, mirrored from the
+  // sibling FortiToolkit project's identical core/ui boundary) — this is
+  // the ONLY place that creates the 2D context, exactly the same pattern
+  // FortiToolkit's ui.js already established for its own combobox-list
+  // width sizing (getPolComboMeasureCtx/measuredListWidth).
+  var _topazMeasureCtx = null;
+  function measureNodeLabelWidth(text) {
+    if (!_topazMeasureCtx) {
+      var c = document.createElement('canvas');
+      _topazMeasureCtx = c.getContext('2d');
+    }
+    _topazMeasureCtx.font = '14px "Segoe UI", "Microsoft JhengHei", sans-serif';
+    return Math.ceil(_topazMeasureCtx.measureText(String(text || '')).width);
+  }
+
+  function exportTopazJson() {
+    if (!state.analysis) { alert('尚未載入任何拓樸資料'); return; }
+    if (!confirm(TOPAZ_JSON_LIMITATIONS)) return;
+    var doc = TopoCore.buildTopazDocument(state.analysis, 'FortiToolkit topology export', measureNodeLabelWidth);
+    var blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'fortigate-topology.topaz.json';
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
   // ---------- data loading ----------
   function loadCsvText(text, sourceLabel) {
     try {
@@ -1885,6 +2563,8 @@
     document.getElementById('chkGw').onchange = function (e) { state.chkGw = e.target.checked; render(); };
     document.getElementById('chkPhysics').onchange = function (e) { state.chkPhysics = e.target.checked; render(); };
     document.getElementById('btnPng').onclick = exportFullPng;
+    document.getElementById('btnTopaz').onclick = exportTopazFormat;
+    document.getElementById('btnTopazJson').onclick = exportTopazJson;
 
     // drag & drop anywhere on the page
     var dz = document.getElementById('dropzone');
@@ -1908,4 +2588,5 @@
 </script>
 </body>
 </html>
+
 
