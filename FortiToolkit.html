@@ -340,6 +340,7 @@
           <div class="tab" id="tab_vpn"><span id="tabVpn">VPN</span></div>
           <div class="tab" id="tab_vip"><span id="tabVip">VIP</span></div>
           <div class="tab" id="tab_ippool"><span id="tabIppool">IP Pool</span></div>
+          <div class="tab" id="tab_vlan"><span id="tabVlan">VLAN</span></div>
           <div class="tab" id="tab_svc"><span id="tabSvc">System Services</span></div>
           <div class="tab" id="tab_matrix"><span id="tabMatrix">Traffic Matrix</span></div>
           <!-- divider + CLI-GENERATING tabs (tick items / fill a form ->
@@ -361,6 +362,7 @@
         <div class="panel" id="vpn" style="display:none"></div>
         <div class="panel" id="vip" style="display:none"></div>
         <div class="panel" id="ippool" style="display:none"></div>
+        <div class="panel" id="vlan" style="display:none"></div>
         <div class="panel" id="svc" style="display:none"></div>
         <div class="panel" id="matrix" style="display:none"></div>
         <div class="panel" id="policy" style="display:none"></div>
@@ -1310,6 +1312,48 @@
     out.sort(function (a, b) {
       if (a.V !== b.V) return a.V < b.V ? -1 : 1;
       if (a.Kind !== b.Kind) return a.Kind < b.Kind ? -1 : 1;
+      return a.Name < b.Name ? -1 : 1;
+    });
+    return out;
+  }
+
+  // Flat VLAN inventory across the whole config — every 'system interface'
+  // object that carries a vlanid (i.e. a real VLAN sub-interface). Same
+  // established "flat, _dev-taggable table" shape as buildVipList/
+  // buildIppoolList (NOT the Interfaces tree, which is single-device and
+  // hierarchical) so it merges cleanly across multiple loaded devices via
+  // ._dev + matchRow() in ui.js. Every value is pulled straight from the
+  // parsed object's T map (parser keeps every `set` verbatim, so this is a
+  // single linear pass, no re-parse). vdom is the interface's OWN assigned
+  // vdom (set vdom "...") when present, else the block's vdom — matching
+  // buildInterfaces()'s own convention.
+  function buildVlanList(parsed) {
+    var zm = zoneMap(parsed);
+    var out = [];
+    parsed.objects.forEach(function (o) {
+      if (o.Sect || o.S !== 'system interface') return;
+      var t = o.T;
+      var vlanid = stripQuotes(t['vlanid'] || '');
+      if (!vlanid) return; // only real VLAN sub-interfaces carry a vlanid
+      var vd = stripQuotes(t['vdom'] || '') || o.V;
+      var mode = stripQuotes(t['mode'] || '');
+      var addr;
+      if (mode === 'dhcp' || mode === 'pppoe') addr = '(' + mode + ')';
+      else { addr = netCidr(t['ip'] || ''); if (addr === '0.0.0.0/0' || addr === '0.0.0.0/32') addr = ''; }
+      out.push({ V: vd, Name: o.N, Vlan: vlanid,
+        Parent: stripQuotes(t['interface'] || '') || '—',
+        Addr: addr || '—',
+        Role: stripQuotes(t['role'] || '') || '—',
+        // FortiOS omits `set status up` (up is default), only emits it when down
+        Status: stripQuotes(t['status'] || '') || 'up',
+        Zone: zm[vd + '|' + o.N] || zm[o.V + '|' + o.N] || '—',
+        Alias: stripQuotes(t['alias'] || '') || '—',
+        L: o.L });
+    });
+    out.sort(function (a, b) {
+      if (a.V !== b.V) return a.V < b.V ? -1 : 1;
+      var na = parseInt(a.Vlan, 10), nb = parseInt(b.Vlan, 10); // numeric vlan-id order, not lexical
+      if (na !== nb) return na - nb;
       return a.Name < b.Name ? -1 : 1;
     });
     return out;
@@ -2881,7 +2925,9 @@
       vip:  { headers:['vdom','Type','Name','Member','ExtIP','ExtIntf','MappedIP','Port','Line'],
               row:function(r){ return [r.V, r.Kind, r.Name, r.Member, r.ExtIP, r.ExtIntf, r.MappedIP, r.Port, r.L]; } },
       ippool:{ headers:['vdom','Type','Name','StartIP','EndIP','PoolType','Line'],
-              row:function(r){ return [r.V, r.Kind, r.Name, r.StartIP, r.EndIP, r.PoolType, r.L]; } }
+              row:function(r){ return [r.V, r.Kind, r.Name, r.StartIP, r.EndIP, r.PoolType, r.L]; } },
+      vlan: { headers:['vdom','Name','VLAN','Parent','Address','Role','Status','Zone','Alias','Line'],
+              row:function(r){ return [r.V, r.Name, r.Vlan, r.Parent, r.Addr, r.Role, r.Status, r.Zone, r.Alias, r.L]; } }
     };
     var spec = specs[tab];
     if (!spec) return null;
@@ -2905,6 +2951,7 @@
     buildInterfaces: buildInterfaces, buildVpn: buildVpn,
     buildMatrix: buildMatrix, buildServices: buildServices,
     buildVipList: buildVipList, buildIppoolList: buildIppoolList,
+    buildVlanList: buildVlanList,
     getContext: getContext, zoneMap: zoneMap, deviceInfo: deviceInfo,
     csvSpec: csvSpec,
     buildPolicyCli: buildPolicyCli, resolvePolicyForTarget: resolvePolicyForTarget,
@@ -3307,6 +3354,7 @@
     // single-device one.
     var vip = Core.buildVipList(parsed);
     var ippool = Core.buildIppoolList(parsed);
+    var vlan = Core.buildVlanList(parsed);
     var t1 = performance.now();
 
     var info = Core.deviceInfo(parsed);
@@ -3323,9 +3371,10 @@
     routes.forEach(function (r){ r._dev = label; });
     vip.forEach(function (r){ r._dev = label; });
     ippool.forEach(function (r){ r._dev = label; });
+    vlan.forEach(function (r){ r._dev = label; });
 
     DEVICES.push({ label:label, info:info, parsed:parsed, comp:comp, clean:clean,
-                   dups:dups, routes:routes, vip:vip, ippool:ippool, fileName:fileName, ms:(t1 - t0),
+                   dups:dups, routes:routes, vip:vip, ippool:ippool, vlan:vlan, fileName:fileName, ms:(t1 - t0),
                    usedBy:null, _text:text });
     collapsed[label] = false;
     // focus the newly added device
@@ -3356,7 +3405,7 @@
 
   // merge all devices into one view; records keep their ._dev tag and unique _id
   function rebuildView() {
-    var comp = [], safe = [], held = [], dups = [], routes = [], vip = [], ippool = [];
+    var comp = [], safe = [], held = [], dups = [], routes = [], vip = [], ippool = [], vlan = [];
     var anyVdom = false, objTotal = 0;
     DEVICES.forEach(function (d){
       comp = comp.concat(d.comp);
@@ -3366,10 +3415,11 @@
       routes = routes.concat(d.routes);
       vip = vip.concat(d.vip);
       ippool = ippool.concat(d.ippool);
+      vlan = vlan.concat(d.vlan);
       anyVdom = anyVdom || d.parsed.vdomMode;
       objTotal += d.parsed.objects.length;
     });
-    A = { comp:comp, clean:{ safe:safe, held:held }, dups:dups, routes:routes, vip:vip, ippool:ippool,
+    A = { comp:comp, clean:{ safe:safe, held:held }, dups:dups, routes:routes, vip:vip, ippool:ippool, vlan:vlan,
           vdomMode:anyVdom, objTotal:objTotal };
     document.getElementById('chkCross').style.display = anyVdom ? '' : 'none';
   }
@@ -3471,10 +3521,10 @@
   //     safe    Safe to remove — flag genuinely unused objects -> cleanup CLI (actual deletion)
   // See base_notopo.html's #tabsbar for the matching visual grouping (a
   // divider + a colored dot indicator on every CLI-generating tab).
-  var TABS = ['ov','routes','iface','vpn','vip','ippool','svc','matrix','policy','comp','dup','safe'];
+  var TABS = ['ov','routes','iface','vpn','vip','ippool','vlan','svc','matrix','policy','comp','dup','safe'];
   function renderAll() {
     renderOverview(); renderRoutes(); renderIfaces(); renderVpn();
-    renderVip(); renderIppool(); renderSvc(); renderMatrix();
+    renderVip(); renderIppool(); renderVlan(); renderSvc(); renderMatrix();
     renderPolicyBuilder(); renderComp(); renderDup(); renderSafe();
     applyIndet();
   }
@@ -3903,6 +3953,33 @@
       'IPv4 and IPv6 NAT IP Pool objects parsed from the config, shown together (IPv4/IPv6 distinguished by Type) — this is a read-only inventory view, unlike Policy Builder\'s own NAT pool picker, which is deliberately IPv4-only since it only ever generates a v4 firewall policy.',
       metaOf(rows, 'L'));
     document.getElementById('tabIppool').textContent = 'IP Pool (' + rows.length + ')';
+  }
+
+  // ---------- VLAN inventory listing ----------
+  // A flat, read-only, sortable/exportable roll-up of every VLAN
+  // sub-interface across ALL loaded devices and vdoms at once — the
+  // "scan one field across the whole config" view the Interfaces tree
+  // (single-device, hierarchical, expand-to-see) can't give you. Same
+  // established flat-table pattern as VIP/IP Pool (A.vlan + matchRow(),
+  // multi-device Host column) — see core.js's buildVlanList() for why
+  // it's a flat list, not a tree node. VLAN id is sorted numerically in
+  // core, but the shared table() header-click sort also handles it
+  // numerically (sortKey), so clicking any column re-sorts correctly.
+  function renderVlan() {
+    if (!A) return;
+    var rows = A.vlan.filter(function (r){ return matchRow(r); });
+    var multi = DEVICES.length > 1;
+    var head = (multi ? ['Host'] : []).concat(['vdom','Name','VLAN','Parent','Address','Role','Status','Zone','Alias','Line']);
+    var body = rows.map(function (r){
+      var row = [esc(r.V), esc(r.Name), esc(r.Vlan), esc(r.Parent), esc(r.Addr),
+        esc(r.Role), esc(r.Status), esc(r.Zone), esc(r.Alias), r.L];
+      if (multi) row.unshift(esc(r._dev));
+      return row;
+    });
+    document.getElementById('vlan').innerHTML = table(head, body,
+      'Every VLAN sub-interface parsed from the config (any system interface with a vlanid), across all devices and vdoms — a flat inventory for auditing/searching VLAN ids in one place, complementing the per-device Interfaces tree. Parent is the physical/aggregate interface the VLAN rides on; Address blank means no L3 address (or DHCP/PPPoE shown in parentheses). Double-click a row to see the original config.',
+      metaOf(rows, 'L'));
+    document.getElementById('tabVlan').textContent = 'VLAN (' + rows.length + ')';
   }
 
   // ---------- policy builder ----------
@@ -6209,6 +6286,7 @@
             : curTab === 'dup'  ? A.dups
             : curTab === 'vip'  ? A.vip
             : curTab === 'ippool' ? A.ippool
+            : curTab === 'vlan' ? A.vlan
             : A.routes;
     var rows = src.filter(function (r){ return matchRow(r); }).map(spec.row);
     download(curTab + '.csv', toCsv(spec.headers, rows));
@@ -6458,4 +6536,3 @@
 </script>
 </body>
 </html>
-
